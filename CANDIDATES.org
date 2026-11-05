@@ -1,0 +1,67 @@
+#+TITLE: CANDIDATES.org — crew inventory + review roles (v2, REAL ROLES ONLY)
+#+REPO: khaalidrafi/lark-org (ai/main)
+#+ROLE: crew + review law for this repo under the ORG-CHAT-STANDARD.org
+        v1.1 regime (sections 1-8 kit law, prefix lark-org-).  Owner
+        2026-11-03 19:20 #hq: "REAL ROLES ONLY. INTERNS AREN'T
+        RELIABLE. USE WELL-KNOWN MEMBERS WITH PROVEN EL EXPERTISE." —
+        this roster carries named team seats only.
+#+EXPIRY-LAW: every free tier is recorded with its expiry (dated or
+        undated) + rotation risk + fallback chain — never treated as
+        unlimited (Owner order 2026-10-20).  The authoritative crew
+        roster + free-tier market scan lives in the umbrella board:
+        khaalidrafi/emacs-purple CANDIDATES.org; the table below is
+        the mirror for this repo.
+
+* Crew — real seats from agent-team/MEMBERS.org (umbrella roster)
+
+| Seat (real role)             | Member (model@agent)                     | Proven elisp evidence                                        | Free-tier expiry / risk          |
+|------------------------------+------------------------------------------+--------------------------------------------------------------+----------------------------------|
+| Implementer                  | antling/Ling-3.1-flash@opencode          | Port Engineer; 19/19 hidden-ERT ELisp trials (2026-11-01); TB2.1 70.2, SWE-Pro 59.4 | TWO-WEEK trial (vendor X post); 20 RPM / 50 req/day cap; ling lane dry 11-03 night |
+| Senior Emacs Lisp Engineer   | glm-5.3@chat.z.ai (brain) + antling/Ring-2.6-1T@opencode (reviewing hands) | Owner fiat 2026-10-29 ("Senior EL engineer MUST be GLM-5.3@chat.z.ai"); AA 60, GDPval-AA 1769; author != reviewer on every landing | z.ai lane OFF-PEAK only (see law below) |
+| QA + Docs Engineer           | nvidia/nemotron-3.5-lightning:free@cline | QA seat since 2026-10-29; ERT + byte-compile sweeps, doc passes | free, undated — cline rotation REALIZED (11-02 list: solar-mini-4 + nemotron-3.5-super-vl; lightning OUT; same brain free on kilo/NIM/opencode)    |
+| Team Lead + DoE (final gate) | z.ai-agent (GLM-5.3-Flash relay, #hq)    | umbrella Lead + Director of Engineering; merge + rating gates | Owner-paced web relay            |
+
+- REMOVED by Owner order 2026-11-03 19:20 #hq: intern
+  opencode/pulse-alpha-free and the moonmath worker seats (not real
+  roles; a seat may still RUN them as ad-hoc tools, but their output
+  never lands without the owning seat's review and gates).
+- GLM 5.3 on z.ai — off-peak law (Owner 2026-11-03 19:15 #hq):
+  APPROVED for the Senior seat's review passes, OFF-PEAK only
+  (Asia/Dhaka ~00:00-09:00).  Author != reviewer on every landing.
+
+* Landing log
+
+1. DONE — standalone repo extraction (Owner 2026-11-05 11:50
+   Asia/Dhaka #hq: "lark-org.el gotta be a new repo. Where did you
+   make the pkg?").  Answer to the Owner: the package first landed in
+   emacs-purple @0713aa8 (code) + @ddb8466 (board), the 11:04
+   directive closed same tick with all four gates.  This extraction
+   moves it verbatim to THIS repo (khaalidrafi/lark-org, created via
+   API same tick): lark-org.el + test.el byte-identical to the
+   emacs-purple copies (cmp-verified), Makefile adapted from
+   telega-org, README.org + CANDIDATES.org + AI-REVIEW.org written
+   fresh, .gitignore = *.elc.  emacs-purple drops the two files in
+   the paired relocation commit; this board keeps the provenance
+   chain 11:04 -> 11:50.
+   Gates on the new tree: G1 rubric PASS (package code unchanged —
+   the §1-9 walk from 0713aa8 carries over; repo scaffold walked:
+   no stale emacs-purple references, standard pointer -> telega-org
+   copy).  G2 PASS zero findings — Ring-2.6-1T@antling reviewing
+   hands, author != reviewer (glm-5.3@z.ai 429 even off-peak,
+   disclosed).  G3 Emacs 30.1 cold toolchain: byte-compile
+   error-on-warn 0/0; ERT 26/26 lark (this repo) + 52/52 org +
+   20/20 discord regression in emacs-purple after the removal —
+   relocation broke nothing; no network (transport seam stubbed,
+   app-id unset, accidental live calls fail fast).  G4 house commit
+   law + push verified by ls-remote on both repos.
+   (:RATING: 4 met-clean — the Owner's new-repo directive lands
+   complete on the same tick; the move is provably verbatim, both
+   repos read 0/0 vs their remotes, and the board carries the full
+   provenance + gate chain.)
+
+* NEXT (queue)
+
+- Read-marker unit: unread tags + real previews (the disclosed
+  limit of v0.1) — queued on the Owner's word.
+- Live pass: Lark app with im:message scopes + auth-source secret,
+  then M-x lark-org (Owner-side, item 5 pattern).

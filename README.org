@@ -1,0 +1,57 @@
+#+TITLE: lark-org.el — Org chat UI for Lark Messenger
+
+Render Lark Messenger chats as Org buffers, per ORG-CHAT-STANDARD
+v1.1 (sections 1-8):
+
+- =*Lark Org*= — the chat list (section 3 grammar)
+- =*Lark Org: <chat>*= — one conversation (section 4 grammar)
+
+Backend: Lark Open Platform REST.  Lark international defaults to
+=https://open.larksuite.com=; set =lark-org-api-base= to
+=https://open.feishu.cn= for Feishu.  Built-in libraries only — no
+backend package dependency (url.el transport behind
+=lark-org-http-function=, plus json, org, auth-source, cl-lib).
+
+* Setup
+
+1. Create a Lark app (open.larksuite.com, or open.feishu.cn for
+   Feishu) with =im:message= scopes.
+2. =(setq lark-org-app-id "cli_xxx")=.
+3. Store the app secret in auth-source:
+
+#+begin_example
+machine lark-org login app-secret password <secret>
+#+end_example
+
+   (=lark-org-secret-auth-source= selects the host/user pair.)
+4. =M-x lark-org=.
+
+The secret and the cached tenant_access_token live in memory only;
+neither ever enters a buffer, message, or log.
+
+* Install / test
+
+#+begin_example
+make compile   # byte-compile with warnings as errors
+make test      # ERT suite, transport stubbed, no network
+#+end_example
+
+Requires Emacs 28.1+.  Conforms to ORG-CHAT-STANDARD v1.1
+(https://github.com/khaalidrafi/telega-org, file
+ORG-CHAT-STANDARD.org).
+
+* Provenance
+
+First landed in khaalidrafi/emacs-purple @0713aa8 (Owner directive
+2026-11-05 11:04 Asia/Dhaka #hq: "Can you make lark-org.el for Lark
+Messenger?"); extracted verbatim to this standalone repo per the
+Owner's 11:50 directive the same day ("lark-org.el gotta be a new
+repo").  Full gate evidence: AI-REVIEW.org and CANDIDATES.org.
+
+* Disclosed limits (v0.1)
+
+- The chats endpoint carries no unread/mention model and no last
+  message preview: list tags are 0 and previews render the honest
+  placeholder "..." until the read-marker unit lands.
+- History authors are sender ids (the endpoint exposes no member
+  names); history is bounded to =lark-org-max-pages= pages.
