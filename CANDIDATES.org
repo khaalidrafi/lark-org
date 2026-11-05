@@ -75,12 +75,23 @@
   never stored or logged).
 - Sandbox helpers ready: scripts/gh_token_mint.sh (mint) +
   scripts/gh_app_cred.sh (git credential helper, per-op mint).
-- STATUS: one Owner step pending — the App is installed only on
-  freshorama/website (stale permission approval, push false); it is
-  NOT yet installed on the khaalidrafi account.  Until Owner runs
-  Install (khaalidrafi, All repositories, approve the permission
-  set), the fine-grained PAT stays the working push lane; the law
-  below takes effect the moment the install lands.
+- CUTOVER VERIFIED 2026-11-05 09:0xZ #hq (Owner: "app is installed
+  everywhere"): push khaalidrafi/lark-org ai/main -> cb702dc landed
+  via installation 178836379 (user account), ls-remote verified, PAT
+  not needed.  The App holds THREE installations: user khaalidrafi
+  (selected — lark-org included), org freshorama (all), org
+  sensible-os (all); map in vault GH_APP_INSTALLATIONS (ids are not
+  secrets).
+- Gotcha fixed same tick (P1): the mint helper auto-picked the FIRST
+  installation = freshorama org -> its token 403s on khaalidrafi/*
+  repos (installation tokens only write inside their own target).
+  scripts/gh_token_mint.sh now resolves by GH_APP_TARGET_LOGIN and
+  prefers the User installation by default; scripts/gh_app_cred.sh
+  parses the owner from the URL git feeds it.  Both sandbox-side,
+  not in-repo.
+- OPEN with Owner: the user-account install is "selected" — new
+  khaalidrafi/* repos are not covered until added; flip that install
+  to All repositories for full coverage.
 - LAW (post-cutover): all pushes/pulls use App installation tokens;
   vault GH_PAT is retired (Owner revokes); no PAT scope edits for
   new repos anymore (repository_creation is on the App); secrets
