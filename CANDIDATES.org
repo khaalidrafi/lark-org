@@ -82,13 +82,17 @@
   (selected — lark-org included), org freshorama (all), org
   sensible-os (all); map in vault GH_APP_INSTALLATIONS (ids are not
   secrets).
-- Gotcha fixed same tick (P1): the mint helper auto-picked the FIRST
-  installation = freshorama org -> its token 403s on khaalidrafi/*
-  repos (installation tokens only write inside their own target).
-  scripts/gh_token_mint.sh now resolves by GH_APP_TARGET_LOGIN and
-  prefers the User installation by default; scripts/gh_app_cred.sh
-  parses the owner from the URL git feeds it.  Both sandbox-side,
-  not in-repo.
+- Helper mechanics, corrected (scripts/gh_app_cred.sh + scripts/
+  gh_token_mint.sh; gh_app_cred.sh no longer needs owner-parsing
+  logic): git's credential request is HOST-WIDE (protocol+host+
+  wwwauth — no repo path), so the cred helper cannot see the repo
+  owner; it defaults to the USER-account installation (covers
+  khaalidrafi/*) and org pushes export GH_APP_TARGET_LOGIN=<org>
+  explicitly.  Push usage needs the LEADING EMPTY
+  `-c credential.helper=` — it resets git's helper list so a stale
+  global store helper cannot answer first with a dead credential;
+  the empty value scopes the override to that single invocation, do
+  not "fix" it as dead code.  Helpers are sandbox-side, not in-repo.
 - OPEN with Owner: the user-account install is "selected" — new
   khaalidrafi/* repos are not covered until added; flip that install
   to All repositories for full coverage.
