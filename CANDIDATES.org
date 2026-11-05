@@ -65,3 +65,25 @@
   limit of v0.1) — queued on the Owner's word.
 - Live pass: Lark app with im:message scopes + auth-source secret,
   then M-x lark-org (Owner-side, item 5 pattern).
+* GitHub App auth law — 2026-11-05 14:32 Asia/Dhaka #hq (Owner: "Can we switch to GitHub Apps instead of PATs?" + "update ALL teams now")
+
+- GitHub App "Khalid's Slave" (slug khalid-s-slave) replaces PATs for
+  ALL GitHub auth.  Registration verified live: contents WRITE,
+  metadata read, repository_creation write; the JWT -> installation
+  token mint WORKS (10-min RS256 JWT from a vault-only private key,
+  then a <=1h installation token minted per operation, memory-only,
+  never stored or logged).
+- Sandbox helpers ready: scripts/gh_token_mint.sh (mint) +
+  scripts/gh_app_cred.sh (git credential helper, per-op mint).
+- STATUS: one Owner step pending — the App is installed only on
+  freshorama/website (stale permission approval, push false); it is
+  NOT yet installed on the khaalidrafi account.  Until Owner runs
+  Install (khaalidrafi, All repositories, approve the permission
+  set), the fine-grained PAT stays the working push lane; the law
+  below takes effect the moment the install lands.
+- LAW (post-cutover): all pushes/pulls use App installation tokens;
+  vault GH_PAT is retired (Owner revokes); no PAT scope edits for
+  new repos anymore (repository_creation is on the App); secrets
+  law unchanged — keys in vault only, never in git, logs, or chat
+  echoes.  PEM rotation advised once cutover verifies (the key was
+  transferred outside vault channels once).
