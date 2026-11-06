@@ -40,6 +40,22 @@ Requires Emacs 28.1+.  Conforms to ORG-CHAT-STANDARD v1.1
 (https://github.com/khaalidrafi/telega-org, file
 ORG-CHAT-STANDARD.org).
 
+* Android / touch
+
+The package is Android-compatible by law (Owner 2026-11-06 #hq:
+"Comms pkgs must be Android-compatible"): it is pure elisp over
+url.el — no subprocess, no graphic-only API, nothing desktop
+assumed — and it runs on the official Emacs Android app
+(org.gnu.emacs), Termux Emacs, and touch tablets.  On a detected
+touch device (=lark-org--touch-device-p=: =system-type= = 'android,
+the =TERMUX_VERSION= variable, or a =touch-screen= terminal
+parameter) =lark-org-touch-mode= binds a single tap to open, taps
+fold headings, lines cut at the window edge and scrolling follows
+the finger (=scroll-conservatively= 101, =truncate-lines= t).  No
+feature depends on hover.  url.el on Android uses the same TLS
+stack as elsewhere; the app secret stays in auth-source, in
+memory only.
+
 * Provenance
 
 First landed in khaalidrafi/emacs-purple @0713aa8 (Owner directive
@@ -48,10 +64,15 @@ Messenger?"); extracted verbatim to this standalone repo per the
 Owner's 11:50 directive the same day ("lark-org.el gotta be a new
 repo").  Full gate evidence: AI-REVIEW.org and CANDIDATES.org.
 
-* Disclosed limits (v0.1)
+* Disclosed limits (v0.1 -> v0.2)
 
 - The chats endpoint carries no unread/mention model and no last
-  message preview: list tags are 0 and previews render the honest
-  placeholder "..." until the read-marker unit lands.
+  message preview.  Since v0.2 the read-marker unit closes the gap:
+  a local marker (stamped when a chat view renders, persisted in
+  =lark-org-read-state-file=) counts unread messages, and the real
+  preview renders from bounded history, at the cost of one bounded
+  history read per chat per refresh.  =lark-org-markers= nil (or a
+  failed read) restores the v0.1 placeholders: tags 0, "...".
+  Mentions stay 0 — the endpoint exposes no mention model.
 - History authors are sender ids (the endpoint exposes no member
   names); history is bounded to =lark-org-max-pages= pages.

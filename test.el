@@ -406,5 +406,199 @@ an error -- no hover-dependent feature."
       ;; id asked for, the fixture renders its own hq transcript.
       (should (string= (buffer-name buf) "*Lark Org: hq*")))))
 
+;;;; Read markers (the v0.2 local unread model)
+
+;; The marker registry is kept in memory for every test in this
+;; section (load-once satisfied), and the state file lands in a temp
+;; directory, so the developer's real markers are never touched.
+
+(defun lark-org-tests--history-item (id ms-ago text &optional out)
+  "Return one raw history item the way the live API spells it.
+MS-AGO is truncated to whole milliseconds; keys are symbols, the
+shape `lark-org--decode-json' hands over (object-type alist)."
+  (list (cons 'message_id id)
+        (cons 'create_time (number-to-string (truncate ms-ago)))
+        (cons 'msg_type "text")
+        (cons 'sender (list (cons 'id
+                                  (if out "ou_self" "ou_khalid"))))
+        (cons 'body (list (cons 'content
+                                (json-encode
+                                 (list (cons "text" text))))))))
+
+(defmacro lark-org-tests--with-markers (&rest body)
+  "Run BODY with a clean in-memory marker registry and a temp file.
+The state file lives inside a fresh temp directory, so the
+developer's real markers are never touched."
+  (declare (indent 0))
+  `(let* ((dir (make-temp-file "lark-org-tests" t))
+          (lark-org--read-state nil)
+          (lark-org--read-state-loaded t)
+          (lark-org-read-state-file
+           (expand-file-name "state" dir)))
+     (unwind-protect
+         (progn ,@body)
+       (delete-directory dir t))))
+
+(ert-deftest lark-org-tests-unread-count ()
+  "Unread = messages strictly newer than the marker; undated never."
+  (let ((msgs (list (list :id "a" :time (seconds-to-time 100))
+                    (list :id "b" :time (seconds-to-time 200))
+                    (list :id "c" :time nil)
+                    (list :id "d" :time (seconds-to-time 300)))))
+    (should (= (lark-org--unread-count msgs 0) 3))
+    (should (= (lark-org--unread-count msgs 100) 2))
+    (should (= (lark-org--unread-count msgs 300) 0))
+    (should (= (lark-org--unread-count msgs 999) 0))))
+
+(ert-deftest lark-org-tests-read-state-roundtrip ()
+  "Markers persist to `lark-org-read-state-file' and read back."
+  (lark-org-tests--with-markers
+    (lark-org--stamp-read "oc_x" (seconds-to-time 500))
+    (should (= (cdr (assoc "oc_x" lark-org--read-state)) 500.0))
+    ;; a stamp that moves backwards is a no-op: a stale view cannot
+    ;; un-read what a fresh one saw
+    (lark-org--stamp-read "oc_x" (seconds-to-time 100))
+    (should (= (cdr (assoc "oc_x" lark-org--read-state)) 500.0))
+    ;; a fresh session reads the same markers back
+    (setq lark-org--read-state nil lark-org--read-state-loaded nil)
+    (lark-org--read-state-ensure)
+    (should (= (cdr (assoc "oc_x" lark-org--read-state)) 500.0))))
+
+(ert-deftest lark-org-tests-read-state-corrupt-file ()
+  "A corrupt state file reads as no markers, never an error."
+  (lark-org-tests--with-markers
+    (write-region "((broken" nil lark-org-read-state-file)
+    (setq lark-org--read-state-loaded nil)
+    (lark-org--read-state-ensure)
+    (should (null lark-org--read-state))))
+
+(ert-deftest lark-org-tests-enrich-preview-and-unread ()
+  "The list heading renders a real unread tag and real preview
+from bounded history through the seam; first sight baselines."
+  (lark-org-tests--with-markers
+    (let* ((now (float-time))
+           (history
+            (list (lark-org-tests--history-item
+                   "om_a" (* 1000 (- now 300)) "first in")
+                  (lark-org-tests--history-item
+                   "om_b" (* 1000 (- now 200)) "call me tonight")))
+           (calls nil)
+           (lark-org-history-function
+            (lambda (chat-id)
+              (push chat-id calls) history))
+           (chats (lark-org--enrich-chat
+                   (list :id "oc_alice" :group "Pinned" :name "Alice"
+                         :unread 0 :mentions 0 :muted nil
+                         :last-time "" :last-dir 'in :last-text "..."))))
+      ;; first sight: baseline stamped at the newest message, zero tags
+      ;; (the API stamps whole milliseconds, so hold the second-wide
+      ;; slack the create_time -> seconds truncation costs)
+      (should (= (plist-get chats :unread) 0))
+      (should (equal calls '("oc_alice")))
+      (should (< (abs (- (cdr (assoc "oc_alice" lark-org--read-state))
+                         (- now 200)))
+                 1.5))
+      (should (string= (plist-get chats :last-text) "call me tonight"))
+      (should (eq (plist-get chats :last-dir) 'in))
+      ;; now two messages arrive, the newest outgoing; the count
+      ;; measures against the marker
+      (let ((lark-org-self-open-id "ou_self"))
+        (setq history
+              (append history
+                      (list (lark-org-tests--history-item
+                             "om_c" (* 1000 (- now 100)) "one more")
+                            (lark-org-tests--history-item
+                             "om_d" (* 1000 (- now 50)) "and me" t))))
+        (setq chats (lark-org--enrich-chat
+                     (list :id "oc_alice" :group "Pinned" :name "Alice"
+                           :unread 0 :mentions 0 :muted nil
+                           :last-time "" :last-dir 'in :last-text "...")))
+        (should (= (plist-get chats :unread) 2))
+        (should (eq (plist-get chats :last-dir) 'out)))
+      ;; a failing history read degrades to the v0.1 placeholders
+      (let ((lark-org-history-function
+             (lambda (_) (error "api down"))))
+        (setq chats (lark-org--enrich-chat
+                     (list :id "oc_alice" :group "Pinned" :name "Alice"
+                           :unread 0 :mentions 0 :muted nil
+                           :last-time "" :last-dir 'in :last-text "...")))
+        (should (string= (plist-get chats :last-text) "..."))
+        (should (= (plist-get chats :unread) 0))))))
+
+(ert-deftest lark-org-tests-markers-nil-keeps-placeholders ()
+  "With `lark-org-markers' nil nothing feeds off history or markers:
+the converters keep the v0.1 placeholder values untouched."
+  (let ((lark-org-markers nil)
+        (lark-org-history-function
+         (lambda (_) (error "history must not be read"))))
+    ;; the index converter alone speaks placeholders
+    (let ((chats (lark-org--index-from-items
+                  (list (list (cons 'chat_id "oc_a")
+                              (cons 'name "Alice"))))))
+      (should (= (plist-get (car chats) :unread) 0))
+      (should (string= (plist-get (car chats) :last-text) "...")))
+    ;; the view converter leaves every unread flag unset
+    (let ((conv (lark-org--view-from-items "oc_a" "Alice" "im"
+                                           (list
+                                            (lark-org-tests--history-item
+                                             "om_a" 1000 "hi")))))
+      (should (cl-every #'null
+                        (mapcar (lambda (m) (plist-get m :unread))
+                                (plist-get conv :messages)))))))
+
+(ert-deftest lark-org-tests-view-open-stamps-read ()
+  "Rendering a view stamps the chat's marker past its newest message."
+  (lark-org-tests--with-markers
+    (let ((newest (car (last (plist-get
+                              (lark-org--fixture-view "oc_fixture_hq")
+                              :messages)))))
+      (lark-org-view-render "oc_fixture_hq")
+      (should (= (cdr (assoc "oc_fixture_hq" lark-org--read-state))
+                 (float-time (plist-get newest :time)))))))
+
+(ert-deftest lark-org-tests-apply-unread-flags ()
+  "First unread message carries the count, the rest t, rest nil."
+  (lark-org-tests--with-markers
+    (let* ((now (float-time))
+           (msgs (list (list :id "m1" :time (seconds-to-time
+                                             (- now 300)) :unread nil)
+                       (list :id "m2" :time (seconds-to-time
+                                             (- now 20)) :unread nil)
+                       (list :id "m3" :time (seconds-to-time
+                                             (- now 10)) :unread nil)
+                       (list :id "m4" :time (seconds-to-time
+                                             (- now 5)) :unread nil))))
+      ;; no marker yet: no flags (the baseline lands at view render)
+      (should (cl-every #'null
+                        (mapcar (lambda (m) (plist-get m :unread))
+                                (lark-org--apply-unread "oc_hq" msgs))))
+      ;; marker at now-30: three unread, first carries the count
+      (setq lark-org--read-state (list (cons "oc_hq" (- now 30))))
+      (let ((flagged (lark-org--apply-unread "oc_hq" msgs)))
+        (should (null (plist-get (nth 0 flagged) :unread)))
+        (should (equal (plist-get (nth 1 flagged) :unread) 3))
+        (should (eq (plist-get (nth 2 flagged) :unread) t))
+        (should (eq (plist-get (nth 3 flagged) :unread) t))))))
+
+(ert-deftest lark-org-tests-relative-time ()
+  "Preview stamps speak the fixture vocabulary: now/m/h/d, then date."
+  (let ((now (float-time)))
+    (should (string= (lark-org--relative-time (seconds-to-time
+                                               (- now 5)))
+                     "now"))
+    (should (string= (lark-org--relative-time (seconds-to-time
+                                               (- now 120)))
+                     "2m"))
+    (should (string= (lark-org--relative-time (seconds-to-time
+                                               (- now 7200)))
+                     "2h"))
+    (should (string= (lark-org--relative-time (seconds-to-time
+                                               (- now 172800)))
+                     "2d"))
+    (should (string-match-p
+             "^[0-9][0-9]\\.[0-9][0-9]\\.[0-9][0-9]$"
+             (lark-org--relative-time (seconds-to-time
+                                       (- now 1209600)))))))
+
 (provide 'lark-org-tests)
 ;;; lark-org-tests.el ends here
