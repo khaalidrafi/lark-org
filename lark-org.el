@@ -5,7 +5,7 @@
 ;; Author: lark-org authors
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: comm, org
-;; Version: 0.1
+;; Version: 0.2
 
 ;;; Commentary:
 
@@ -48,8 +48,15 @@
 ;;
 ;; Disclosed limits (v0.1, logged in CANDIDATES.org):
 ;; - The chats endpoint carries no unread/mention model and no last
-;;   message preview, so list tags are 0 and previews render the
-;;   honest placeholder "..." until the read-marker unit lands.
+;;   message preview.  Since v0.2 the package keeps its own: the
+;;   read-marker unit (`lark-org-markers') counts unread messages
+;;   against a local marker -- stamped whenever a chat view renders,
+;;   persisted in `lark-org-read-state-file' -- and renders the real
+;;   preview from bounded history, at the cost of one bounded history
+;;   read per chat per list refresh.  With `lark-org-markers' nil, or
+;;   whenever that read fails, the v0.1 placeholders come back: tags
+;;   0 and the honest "...".  Mentions stay 0: the endpoint exposes
+;;   no mention model, and guessing one would lie.
 ;; - History authors are sender ids (the history endpoint exposes no
 ;;   member names); the view shows the id, "unknown" when empty.
 ;; - History is bounded to `lark-org-max-pages' pages.
@@ -193,6 +200,40 @@ never degrades silently."
 acts like RET on a chat (section 7 touch law); no feature depends
 on hover."
   :type 'boolean
+  :group 'lark-org)
+
+(defcustom lark-org-markers t
+  "Non-nil to render real unread tags and real previews.
+The chats endpoint carries no unread or preview model (the v0.1
+disclosed limit), so the package keeps its own: bounded history
+per chat -- at most `lark-org-max-pages' pages -- feeds the list
+preview and an unread count measured against the local read
+marker, which is stamped whenever a chat view renders and
+persisted in `lark-org-read-state-file'.  The cost is one bounded
+history read per chat per list refresh; nil restores the v0.1
+zero-cost placeholders (zero tags, the honest \"...\")."
+  :package-version '(lark-org . "0.2.0")
+  :type 'boolean
+  :group 'lark-org)
+
+(defcustom lark-org-read-state-file
+  (expand-file-name "lark-org/read-state" user-emacs-directory)
+  "File the read markers persist to: one alist of (CHAT-ID . TIME),
+TIME the unix seconds of the newest message already seen in that
+chat.  Written through `with-temp-file', read tolerantly -- a
+missing or corrupt file reads as no markers, never an error."
+  :package-version '(lark-org . "0.2.0")
+  :type 'file
+  :group 'lark-org)
+
+(defcustom lark-org-history-function #'lark-org--history-items
+  "Function of one argument, a chat id, returning raw history
+items (newest last, the ByCreateTimeAsc order the live default
+asks for), bounded by `lark-org-max-pages'.  The seam the read
+markers read through: bind a stub for offline tests (standard
+section 9.9), the way `lark-org-http-function' is one level down."
+  :package-version '(lark-org . "0.2.0")
+  :type 'function
   :group 'lark-org)
 
 (defvar lark-org-current-chat-id nil
@@ -392,7 +433,10 @@ rule 1); no match goes to the fallback group."
   "Convert Lark chats ITEMS to the section 3 chat plists.
 The chats endpoint carries no unread/mention model and no last
 message preview -- tags are 0 and the preview is the honest
-placeholder \"...\" (disclosed limit, see Commentary)."
+placeholder \"...\" (disclosed limit, see Commentary).
+When `lark-org-markers' is non-nil the live index replaces the
+placeholders right after this, from bounded history; these are
+the values a degraded refresh keeps."
   (mapcar
    (lambda (item)
      (let ((name (lark-org--s (alist-get 'name item))))
@@ -479,9 +523,15 @@ carrying a JSON object -- this shape is pinned by an ERT."
           :out self :unread nil :mention nil)))
 
 (defun lark-org--view-from-items (chat-id name kind items)
-  "Convert Lark history ITEMS to a section 4 conversation plist."
-  (list :id chat-id :name name :kind kind
-        :messages (mapcar #'lark-org--message-from-item items)))
+  "Convert Lark history ITEMS to a section 4 conversation plist.
+With `lark-org-markers' non-nil the messages carry the local
+unread flags -- first unread message with the count, the rest t
+-- measured against the chat's read marker; the view renderer
+stamps the marker past the newest message once this renders."
+  (let ((msgs (mapcar #'lark-org--message-from-item items)))
+    (when lark-org-markers
+      (setq msgs (lark-org--apply-unread chat-id msgs)))
+    (list :id chat-id :name name :kind kind :messages msgs)))
 
 ;;;; Live adapters (API-backed, fixture degradation on read)
 
@@ -498,7 +548,10 @@ not fixture."
                                nil 'authed)))
              (items (alist-get 'items data)))
         (if (listp items)
-            (lark-org--index-from-items items)
+            (let ((chats (lark-org--index-from-items items)))
+              (if lark-org-markers
+                  (mapcar #'lark-org--enrich-chat chats)
+                chats))
           (lark-org--fixture-index)))
     (error (lark-org--fixture-index))))
 
@@ -576,6 +629,146 @@ any failure so the draft keeps its :draft: tag (section 4 rule 8)
                           (lark-org--encode-text-content text)))
               'authed)))
     (lark-org--s (alist-get 'message_id (alist-get 'data obj)))))
+
+;;;; Read markers (the local unread model)
+
+;; The chats endpoint carries no unread model and no last message (the
+;; v0.1 disclosed limit), so the package keeps its own: a read marker
+;; per chat -- the unix time of the newest message already seen --,
+;; stamped when a view of the chat renders, persisted between
+;; sessions, and measured against bounded history on every list
+;; refresh.  Everything here is pure except the two functions that
+;; touch the file, and every read path degrades to the v0.1
+;; placeholders; only the send path is allowed to signal.
+
+(defvar lark-org--read-state nil
+  "Read markers, an alist of (CHAT-ID . UNIX-SECONDS).")
+
+(defvar lark-org--read-state-loaded nil
+  "Non-nil once the markers were read from disk this session.")
+
+(defun lark-org--read-state-ensure ()
+  "Load the read markers from disk, once per session.
+A missing or corrupt file reads as no markers: read state is a
+cache of what the user saw, losing it may cost a re-read of a
+chat, never an error."
+  (unless lark-org--read-state-loaded
+    (setq lark-org--read-state-loaded t)
+    (setq lark-org--read-state
+          (condition-case nil
+              (let ((obj nil))
+                (with-temp-buffer
+                  (insert-file-contents lark-org-read-state-file)
+                  (goto-char (point-min))
+                  (setq obj (read (current-buffer))))
+                (if (listp obj) obj nil))
+            (error nil)))))
+
+(defun lark-org--read-state-save ()
+  "Persist the read markers to `lark-org-read-state-file'."
+  (condition-case nil
+      (let ((dir (file-name-directory lark-org-read-state-file)))
+        (when (and dir (not (file-directory-p dir)))
+          (make-directory dir t))
+        (with-temp-file lark-org-read-state-file
+          (insert ";; lark-org read markers: (CHAT-ID . unix-seconds)\n"
+                  (prin1-to-string lark-org--read-state) "\n")))
+    (error nil)))
+
+(defun lark-org--stamp-read (chat-id time)
+  "Record CHAT-ID as read up to TIME and persist.
+A stamp never moves the marker backwards, so a stale view cannot
+un-read what a fresh one already saw.  Empty ids and nil times
+are ignored: there is nothing to mark."
+  (when (and (stringp chat-id) (not (string-empty-p chat-id)) time)
+    (lark-org--read-state-ensure)
+    (let ((tm (float-time time)))
+      (when (> tm (or (cdr (assoc chat-id lark-org--read-state)) 0))
+        (setq lark-org--read-state
+              (cons (cons chat-id tm)
+                    (delete (assoc chat-id lark-org--read-state)
+                            lark-org--read-state)))
+        (lark-org--read-state-save)))))
+
+(defun lark-org--unread-count (msgs marker)
+  "Count the MSGS newer than MARKER, a unix-seconds float.
+Messages without a time never count: a message the backend did
+not date cannot be proven unread."
+  (let ((n 0))
+    (dolist (m msgs)
+      (let ((tm (plist-get m :time)))
+        (when (and tm (> (float-time tm) marker))
+          (setq n (1+ n)))))
+    n))
+
+(defun lark-org--enrich-chat (chat)
+  "Fill CHAT's preview and unread tag from bounded history.
+One history read through `lark-org-history-function', at most
+`lark-org-max-pages' pages -- the disclosed cost of a real
+preview.  On any failure the chat keeps the v0.1 placeholders: a
+read path degrades, it never signals.  A chat seen for the first
+time gets its baseline stamped at the newest message, so the
+count starts from what arrives after this refresh, not from the
+beginning of the conversation."
+  (lark-org--read-state-ensure)
+  (let* ((raw (condition-case nil
+                  (funcall lark-org-history-function
+                           (plist-get chat :id))
+                (error nil)))
+         (msgs (and (listp raw)
+                    (delq nil (mapcar #'lark-org--message-from-item
+                                      raw)))))
+    (if (not msgs)
+        chat
+      (let* ((newest (car (last msgs)))
+             (time (plist-get newest :time))
+             (marker (cdr (assoc (plist-get chat :id)
+                                 lark-org--read-state)))
+             (unread (if marker
+                         (lark-org--unread-count msgs marker)
+                       (progn
+                         (when time
+                           (lark-org--stamp-read
+                            (plist-get chat :id) time))
+                         0))))
+        (setq chat (plist-put chat :unread unread))
+        (when time
+          (setq chat (plist-put chat :last-time
+                                (lark-org--relative-time time))
+                chat (plist-put chat :last-dir
+                                (if (plist-get newest :out)
+                                    'out 'in))
+                chat (plist-put chat :last-text
+                                (replace-regexp-in-string
+                                 "\n" " " (plist-get newest :text)))))
+        chat))))
+
+(defun lark-org--apply-unread (chat-id msgs)
+  "Set the :unread flags of MSGS from CHAT-ID's read marker.
+The first unread message carries the count and the rest t -- the
+section 4 rule 7 shape the fixture pins -- and a chat without a
+marker gets none: its baseline lands when the view renders."
+  (lark-org--read-state-ensure)
+  (let* ((marker (cdr (assoc chat-id lark-org--read-state)))
+         (left (and marker (lark-org--unread-count msgs marker))))
+    (mapcar
+     (lambda (m)
+       (let ((tm (plist-get m :time)))
+         (if (and left tm (> (float-time tm) marker))
+             (prog1 (plist-put m :unread left) (setq left t))
+           (plist-put m :unread nil))))
+     msgs)))
+
+(defun lark-org--relative-time (time)
+  "Return TIME as the short preview stamp of section 3.4.
+Minutes up to the hour, hours up to the day, days up to the week,
+then the date -- the vocabulary the fixture index renders."
+  (let ((secs (- (float-time) (float-time time))))
+    (cond ((< secs 60) "now")
+          ((< secs 3600) (format "%dm" (truncate (/ secs 60))))
+          ((< secs 86400) (format "%dh" (truncate (/ secs 3600))))
+          ((< secs 604800) (format "%dd" (truncate (/ secs 86400))))
+          (t (format-time-string "%d.%m.%y" time)))))
 
 ;;;; Shared render helpers
 
@@ -907,6 +1100,15 @@ Return the buffer."
          (bname (concat "*Lark Org: " name "*"))
          (old (get-buffer bname))
          (windows (and old (get-buffer-window-list old nil t))))
+    ;; opening the chat is reading it: the marker lands before the
+    ;; buffer is drawn, so the next list refresh counts only what
+    ;; arrives from now on (the registry stamp never moves backwards)
+    (when lark-org-markers
+      (let ((msgs (plist-get conv :messages)))
+        (when (consp msgs)
+          (lark-org--stamp-read
+           (lark-org--view-prop-value (plist-get conv :id))
+           (plist-get (car (last msgs)) :time)))))
     (when old
       (with-current-buffer old (rename-buffer " *Lark Org-old*" t)))
     (let ((buf (get-buffer-create bname)))
