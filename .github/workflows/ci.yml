@@ -1,0 +1,14 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: purcell/setup-emacs@master
+        with:
+          version: 30.1
+      - name: Byte-compile (warnings are errors)
+        run: make compile
+      - name: ERT tests
+        run: make test
