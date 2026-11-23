@@ -5,7 +5,7 @@
 ;; Author: lark-org authors
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: comm, org
-;; Version: 0.3
+;; Version: 0.4
 
 ;;; Commentary:
 
@@ -43,6 +43,16 @@
 ;; Lark app, no app secret, no tenant token, no Open Platform
 ;; app-quota billing (the Owner's 2026-11-23 directive: "since API
 ;; has costs").  Set `lark-org-route' to 'cli.
+;;
+;; `M-x lark-org-cli-install' (v0.4) puts the binary in place with no
+;; npm at all: it downloads the official static release tarball,
+;; verifies it against the release checksums (sha256), and untars
+;; the one file -- pure elisp, so it runs on Termux (the Owner's
+;; 2026-11-23 directive: "Package lark-cli for termux and add
+;; installation process via ELisp in lark-org"), where the binary
+;; lands in $PREFIX/bin.  `M-x lark-org-cli-login' runs the CLI's
+;; interactive login.  The termux/ directory of this repo carries
+;; the same repack as a proper Termux package.
 ;;
 ;; Design law:
 ;; - Add-on, one .el, no backend in Package-Requires (section 1); the
@@ -190,25 +200,31 @@ the Android-compat law holds: nothing required that the Emacs
 Android port cannot provide.
 
 `cli': the official Lark CLI (https://github.com/larksuite/cli,
-command `lark-org-cli-program', installed with `npx
-@larksuite/cli@latest install', logged in once with `lark-cli
-auth login').  The CLI keeps its own credentials in the OS
-keychain and runs the same /open-apis endpoints under YOUR USER
-identity: no Lark app, no app secret, no tenant token, and no
-Open Platform app-quota billing.  This route shells out
-(call-process), so it is a desktop route; a missing or failing
-CLI signals its reason like any unreachable backend (the demo
-fixtures only under `lark-org-demo'), and the send path signals
-(section 4 rule 8)."
-  :package-version '(lark-org . "0.3.0")
+command `lark-org-cli-program', installed by `M-x
+lark-org-cli-install' -- or npx @larksuite/cli@latest install on
+a Node machine -- and logged in once with `M-x
+lark-org-cli-login').  The CLI keeps its own credentials in the
+OS keychain and runs the same /open-apis endpoints under YOUR
+USER identity: no Lark app, no app secret, no tenant token, and
+no Open Platform app-quota billing.  This route shells out
+(call-process), so it is a desktop and Termux route -- the
+installer drops the static binary into Termux's $PREFIX/bin; the
+org.gnu.emacs Android app cannot offer it (Android 10+ forbids
+executing files from app-home directories) and stays on `api'.
+A missing or failing CLI signals its reason like any unreachable
+backend (the demo fixtures only under `lark-org-demo'), and the
+send path signals (section 4 rule 8)."
+  :package-version '(lark-org . "0.4.0")
   :type '(choice (const :tag "Open Platform REST API (default, Android-safe)" api)
                  (const :tag "Official Lark CLI (user identity, no app billing)" cli))
   :group 'lark-org)
 
 (defcustom lark-org-cli-program "lark-cli"
   "Program name of the official Lark CLI, route `cli'.
-Found through `executable-find'; lark-org never sees a credential
-(the CLI's keychain holds them)."
+Found through `executable-find'; `lark-org-cli-install'
+additionally checks the install directory, so a fresh install
+works before the directory reaches PATH.  lark-org never sees a
+credential (the CLI's keychain holds them)."
   :package-version '(lark-org . "0.3.0")
   :type 'string
   :group 'lark-org)
@@ -376,8 +392,8 @@ stubs this function, so no test spawns a process.  call-process
 cannot be interrupted by a timer, so the CLI's own timeouts are
 the timeouts."
   (unless (executable-find lark-org-cli-program)
-    (error "lark-org: %s not found (route `cli': npx @larksuite/cli@latest install, then %s auth login)"
-           lark-org-cli-program lark-org-cli-program))
+    (error "lark-org: %s not found (route `cli': M-x lark-org-cli-install, or npx @larksuite/cli@latest install, then M-x lark-org-cli-login)"
+           lark-org-cli-program))
   (with-temp-buffer
     (let ((exit (apply #'call-process lark-org-cli-program
                        nil (list (current-buffer) t) nil argv)))
@@ -421,6 +437,337 @@ only under `lark-org-demo'), the send path never fakes."
                      ((stringp out)
                       (substring out 0 (min 120 (length out))))
                      (t "no output")))))))
+
+;;;; CLI install (v0.4: one command, no npm -- Termux first-class)
+
+;; The Owner's 2026-11-23 directive ("Package lark-cli for termux
+;; and add installation process via ELisp in lark-org").  The upstream
+;; release binary is a static Go build (verified: no PT_INTERP), so
+;; installing is download + sha256 check + untar of one member -- all
+;; doable with built-ins (url.el, zlib, a small tar scanner), which
+;; keeps the no-npm law: no node anywhere, and no subprocess at all
+;; unless this Emacs lacks zlib (then `tar', which Termux always
+;; carries).  The termux/ directory of this repo repacks the same
+;; binary as a proper Termux package.
+
+(defconst lark-org-cli-release-api
+  "https://api.github.com/repos/larksuite/cli/releases/latest"
+  "GitHub API endpoint answering the newest lark-cli release.
+One GET per install (a version pinned through `lark-org-cli-install'
+skips it).  GH_TOKEN/GITHUB_TOKEN in the environment, when present,
+ride along for tighter rate limits.")
+
+(defcustom lark-org-cli-install-dir nil
+  "Directory `lark-org-cli-install' drops the binary into.
+nil auto-detects: Termux's $PREFIX/bin (already on PATH there --
+the Android story for route `cli'), otherwise ~/.local/bin."
+  :package-version '(lark-org . "0.4.0")
+  :type '(choice (const :tag "Auto (Termux $PREFIX/bin, else ~/.local/bin)" nil)
+                 (directory :tag "Directory"))
+  :group 'lark-org)
+
+(defcustom lark-org-cli-download-function #'url-copy-file
+  "Function (URL DEST) fetching URL into file DEST, binary safe.
+The default url.el copier keeps the installer inside built-ins;
+bind a stub for offline tests, the way `lark-org-http-function'
+is stubbed one level up (standard section 9.9)."
+  :package-version '(lark-org . "0.4.0")
+  :type 'function
+  :group 'lark-org)
+
+(declare-function make-term "term"
+                  (name program &optional startfile &rest switches))
+(declare-function term-char-mode "term" ())
+
+(defun lark-org-cli--termux-prefix ()
+  "Return the Termux PREFIX, or nil outside Termux."
+  (let ((prefix (getenv "PREFIX")))
+    (and (getenv "TERMUX_VERSION")
+         (stringp prefix) (not (string-empty-p prefix))
+         (file-directory-p (expand-file-name "bin" prefix))
+         prefix)))
+
+(defun lark-org-cli--install-dir ()
+  "Directory the CLI installs into (`lark-org-cli-install-dir')."
+  (or lark-org-cli-install-dir
+      (let ((prefix (lark-org-cli--termux-prefix)))
+        (if prefix
+            (expand-file-name "bin" prefix)
+          (expand-file-name "~/.local/bin")))))
+
+(defun lark-org-cli--asset-suffix ()
+  "Return the lark-cli release asset suffix for this machine.
+Upstream names assets lark-cli-<version>-<os>-<cpu>.tar.gz; Termux
+reports its cpu through `system-configuration' like any Linux, so
+one mapping serves phone and desktop.  An unrecognized machine is
+asked (the CLI also ships darwin builds)."
+  (let ((config (format "%s" system-configuration)))
+    (cond ((and (string-match-p "darwin" config)
+                (string-match-p "aarch64\\|arm64" config))
+           "darwin-arm64")
+          ((string-match-p "darwin" config) "darwin-amd64")
+          ((string-match-p "aarch64\\|arm64" config) "linux-arm64")
+          ((string-match-p "x86_64\\|amd64" config) "linux-amd64")
+          ((string-match-p "riscv64" config) "linux-riscv64")
+          (t (completing-read
+              "lark-cli asset suffix for this machine: "
+              '("linux-arm64" "linux-amd64" "linux-riscv64"
+                "darwin-arm64" "darwin-amd64"))))))
+
+(defun lark-org-cli--release ()
+  "Return the newest lark-cli release object from the GitHub API.
+Rides the package's own transport seam; a broken or rate-limited
+answer signals its own message."
+  (let* ((headers '(("Accept" . "application/vnd.github+json")
+                    ("User-Agent" . "lark-org")))
+         (token (or (getenv "GH_TOKEN") (getenv "GITHUB_TOKEN")))
+         (headers (if token
+                      (cons (cons "Authorization"
+                                  (concat "Bearer " token))
+                            headers)
+                    headers))
+         (obj (lark-org--decode-json
+               (funcall lark-org-http-function "GET"
+                        lark-org-cli-release-api headers nil))))
+    (if (and (stringp (alist-get 'tag_name obj))
+             (listp (alist-get 'assets obj)))
+        obj
+      (error "lark-org: GitHub release answer unusable: %s"
+             (or (lark-org--s (alist-get 'message obj))
+                 "no tag_name or assets")))))
+
+(defun lark-org-cli--asset-url (release name)
+  "Return the browser URL of asset NAME in RELEASE, or nil."
+  (catch 'found
+    (dolist (asset (alist-get 'assets release))
+      (when (equal (lark-org--s (alist-get 'name asset)) name)
+        (throw 'found (lark-org--s
+                       (alist-get 'browser_download_url asset)))))
+    nil))
+
+(defun lark-org-cli--checksum-for (text name)
+  "Return the sha256 checksums TEXT records for asset NAME, or nil."
+  (catch 'found
+    (dolist (line (split-string text "\n" t))
+      (when (string-match "\\`\\([0-9a-f]\\{64\\}\\)  *\\(.+\\)\\'" line)
+        (when (equal (file-name-nondirectory (match-string 2 line))
+                     name)
+          (throw 'found (match-string 1 line)))))
+    nil))
+
+(defun lark-org-cli--sha256-file (file)
+  "Return the sha256 of FILE's raw bytes."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally file)
+    (secure-hash 'sha256 (current-buffer))))
+
+(defun lark-org-cli--tar-field (pos offset length)
+  "Return the tar header field at POS+OFFSET, LENGTH bytes.
+Trailing NUL and space padding is stripped by hand -- NUL bytes
+cannot ride in elisp regexps.  Fields are read from the current
+(unibyte) buffer."
+  (let* ((field (buffer-substring-no-properties
+                 (+ pos offset)
+                 (min (+ pos offset length) (point-max))))
+         (end (length field)))
+    (while (and (> end 0)
+                (memq (aref field (1- end)) '(0 ?\s)))
+      (setq end (1- end)))
+    (substring field 0 end)))
+
+(defun lark-org-cli--tar-find-member (basename)
+  "Find regular tar member BASENAME in the current buffer.
+Return (START SIZE MODE) -- buffer positions in the unibyte
+caller, one byte per position -- or nil.  A member matches when
+its full name or its basename equals BASENAME; directories, links
+and extension headers are skipped; the scan stops at tar's end
+marker (the first empty name)."
+  (save-excursion
+    (goto-char (point-min))
+    (catch 'found
+      (while (<= (+ (point) 511) (point-max))
+        (let* ((pos (point))
+               (name (lark-org-cli--tar-field pos 0 100))
+               (size (string-to-number
+                      (lark-org-cli--tar-field pos 124 12) 8))
+               (mode (string-to-number
+                      (lark-org-cli--tar-field pos 100 8) 8))
+               (type (char-after (+ pos 156)))
+               (prefix (lark-org-cli--tar-field pos 345 155))
+               (full (if (string-empty-p prefix)
+                         name (concat prefix "/" name))))
+          (cond ((string-empty-p name)
+                 (throw 'found nil))
+                ((and (or (eq type ?0) (eq type 0) (null type))
+                      (or (equal full basename)
+                          (equal (file-name-nondirectory full)
+                                 basename)))
+                 (throw 'found (list (+ pos 512) size mode))))
+          (goto-char (+ pos 512 (* 512 (ceiling size 512))))))
+      nil)))
+
+(defun lark-org-cli--archive-buffer (archive)
+  "Return a unibyte buffer holding ARCHIVE's tar contents.
+A gzip image (the release asset) is decompressed in memory through
+`zlib-decompress-region'; a plain tar passes through.  The caller
+kills the buffer."
+  (let ((buf (generate-new-buffer " *lark-org-cli-tar*")))
+    (with-current-buffer buf
+      (set-buffer-multibyte nil)
+      (insert-file-contents-literally archive)
+      (when (and (= (or (char-after 1) 0) 31)
+                 (= (or (char-after 2) 0) 139))
+        (if (fboundp 'zlib-decompress-region)
+            (zlib-decompress-region (point-min) (point-max))
+          (error "lark-org: this Emacs has no zlib and %s is gzipped"
+                 archive)))
+      buf)))
+
+(defun lark-org-cli--extract-elisp (archive basename dest)
+  "Pure-elisp extractor: ARCHIVE member BASENAME to DEST."
+  (let ((buf (lark-org-cli--archive-buffer archive))
+        (part (concat dest ".part")))
+    (unwind-protect
+        (let ((found (with-current-buffer buf
+                       (lark-org-cli--tar-find-member basename))))
+          (unless found
+            (error "lark-org: %s carries no %s member" archive basename))
+          (pcase-let ((`(,start ,size ,mode) found))
+            (with-current-buffer buf
+              (write-region start (+ start size) part nil 0))
+            (set-file-modes part (if (zerop mode) #o755 mode))
+            (rename-file part dest t)))
+      (kill-buffer buf)
+      (ignore-errors (delete-file part)))))
+
+(defun lark-org-cli--extract-tar (archive basename dest)
+  "Fallback extractor through `tar -x' (Termux, emacshell, desktops)."
+  (let ((dir (make-temp-file "lark-org-cli-tar" t))
+        (part (concat dest ".part")))
+    (unwind-protect
+        (progn
+          (let ((exit (call-process "tar" nil nil nil
+                                    "-xf" archive "-C" dir)))
+            (unless (zerop exit)
+              (error "lark-org: tar exit %s on %s" exit archive)))
+          (let ((hit (directory-files-recursively
+                      dir (concat "\\`" (regexp-quote basename) "\\'"))))
+            (unless hit
+              (error "lark-org: %s carries no %s member"
+                     archive basename))
+            (copy-file (car hit) part t)
+            (rename-file part dest t)))
+      (delete-directory dir t)
+      (ignore-errors (delete-file part)))))
+
+(defun lark-org-cli--extract-member (archive basename dest)
+  "Write tar member BASENAME of ARCHIVE to DEST (mode preserved).
+Pure elisp when this Emacs has zlib; otherwise the tar program.
+Both write through DEST.part and rename, so a failure never leaves
+a half-written binary behind."
+  (if (fboundp 'zlib-decompress-region)
+      (lark-org-cli--extract-elisp archive basename dest)
+    (lark-org-cli--extract-tar archive basename dest)))
+
+(defun lark-org-cli--program-path ()
+  "Return the CLI's absolute path, or nil when absent.
+The install directory counts even when not (yet) on PATH."
+  (or (executable-find lark-org-cli-program)
+      (let ((path (expand-file-name lark-org-cli-program
+                                    (lark-org-cli--install-dir))))
+        (and (file-executable-p path) path))))
+
+;;;###autoload
+(defun lark-org-cli-install (&optional version)
+  "Install the official lark-cli binary for route `cli', no npm.
+Downloads the release tarball for this machine from
+github.com/larksuite/cli, verifies it against the release
+checksums.txt (sha256), and writes the single static binary to
+`lark-org-cli-install-dir' -- Termux's $PREFIX/bin by default, so
+route `cli' works on Android through Termux (Owner 2026-11-23:
+\"Package lark-cli for termux and add installation process via
+ELisp in lark-org\").  A prefix argument VERSION (like 1.0.100)
+pins a release and skips the GitHub API call entirely.
+
+Afterwards: `lark-org-cli-login', then
+\(setq lark-org-route \='cli).  The termux/ directory of the lark-org
+repo carries the same repack as a proper Termux package."
+  (interactive (list (when current-prefix-arg
+                       (read-string "lark-cli version (like 1.0.100): "))))
+  (let* ((suffix (lark-org-cli--asset-suffix))
+         (release (unless version (lark-org-cli--release)))
+         (ver (or version
+                  (let ((tag (lark-org--s (alist-get 'tag_name release))))
+                    (if (string-match "\\`v\\(.+\\)\\'" tag)
+                        (match-string 1 tag)
+                      tag))))
+         (asset (format "lark-cli-%s-%s.tar.gz" ver suffix))
+         (tar-url (or (and release (lark-org-cli--asset-url release asset))
+                      (format
+                       "https://github.com/larksuite/cli/releases/download/v%s/%s"
+                       ver asset)))
+         (sum-url (or (and release
+                           (lark-org-cli--asset-url release "checksums.txt"))
+                      (format
+                       "https://github.com/larksuite/cli/releases/download/v%s/checksums.txt"
+                       ver)))
+         (dir (lark-org-cli--install-dir))
+         (dest (expand-file-name lark-org-cli-program dir))
+         (tmpdir (make-temp-file "lark-org-cli-install" t))
+         ;; The download lands under a compression-free name so a
+         ;; custom `lark-org-cli-download-function' can never ride
+         ;; auto-compression-mode and re-gzip the asset (jka-compr
+         ;; hooks write-region for compression suffixes; the default
+         ;; url-copy-file is byte-exact either way).
+         (tarball (expand-file-name "asset.download" tmpdir))
+         (sums (expand-file-name "checksums.txt" tmpdir)))
+    (unwind-protect
+        (progn
+          (when (and (executable-find lark-org-cli-program)
+                     (not (y-or-n-p
+                           (format "%s already on PATH; install v%s over it? "
+                                   lark-org-cli-program ver))))
+            (user-error "lark-org: install declined"))
+          (make-directory dir t)
+          (funcall lark-org-cli-download-function tar-url tarball)
+          (funcall lark-org-cli-download-function sum-url sums)
+          (let ((want (lark-org-cli--checksum-for
+                       (with-temp-buffer
+                         (insert-file-contents sums)
+                         (buffer-string))
+                       asset))
+                (got (lark-org-cli--sha256-file tarball)))
+            (unless want
+              (error "lark-org: checksums.txt carries no %s entry" asset))
+            (unless (string-equal-ignore-case want got)
+              (error "lark-org: %s sha256 mismatch (want %s, got %s)"
+                     asset want got)))
+          (lark-org-cli--extract-member tarball "lark-cli" dest))
+      (delete-directory tmpdir t))
+    (message "lark-org: lark-cli %s installed to %s -- next: M-x lark-org-cli-login, then (setq lark-org-route 'cli)"
+             ver dest)))
+
+;;;###autoload
+(defun lark-org-cli-login ()
+  "Run lark-cli's interactive login for route `cli'.
+`lark-cli auth login --recommend' in a term buffer: the CLI prints
+an authorization URL and waits (copy the URL into a browser when
+none opens -- Termux ships no opener by default).  Credentials
+stay in the CLI's OS keychain; Emacs never sees them."
+  (interactive)
+  (let ((prog (lark-org-cli--program-path)))
+    (unless prog
+      (user-error "lark-org: %s not installed; run M-x lark-org-cli-install"
+                  lark-org-cli-program))
+    (if (and (fboundp 'make-term) (fboundp 'term-char-mode))
+        (let ((buf (make-term "lark-org login" prog nil
+                              "auth" "login" "--recommend")))
+          (pop-to-buffer buf)
+          (with-current-buffer buf (term-char-mode)))
+      (async-shell-command
+       (mapconcat #'shell-quote-argument
+                  (list prog "auth" "login" "--recommend") " ")))))
 
 ;;;; Auth (tenant_access_token; memory only, never logged)
 

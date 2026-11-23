@@ -39,8 +39,21 @@ official Lark CLI (https://github.com/larksuite/cli) runs the same
 /open-apis endpoints under YOUR USER identity, so lark-org can ride
 it with no app credentials at all:
 
-1. Install once: =npx @larksuite/cli@latest install=
-2. Log in once: =lark-cli auth login --recommend=
+1. Install once — either way:
+   - =M-x lark-org-cli-install= (v0.4): pure Elisp — resolves the
+     newest release, downloads the tarball for this machine,
+     verifies the sha256 against the release =checksums.txt=, and
+     untars the single static binary (built-ins only: url.el,
+     zlib, an in-Elisp tar scanner; no npm).  Termux's =$PREFIX/bin=
+     by default, =~/.local/bin= elsewhere; =C-u= prefix pins a
+     version and skips the GitHub API call.
+   - =sh termux/install.sh= from this repo (Termux, no Emacs), or
+     =npx @larksuite/cli@latest install= on a Node machine.
+     The =termux/lark-cli/= directory carries the same repack as a
+     proper Termux package (=build.sh=, termux-packages format).
+2. Log in once: =M-x lark-org-cli-login= (runs =lark-cli auth
+   login --recommend=; copy the printed URL into a browser when
+   none opens).
 3. =(setq lark-org-route 'cli')=, then =M-x lark-org=
 
 =lark-org-cli-program= names the binary (default =lark-cli=).
@@ -49,8 +62,8 @@ answer; the CLI keeps its own credentials in the OS keychain and
 they never reach Emacs.  A missing or failing CLI signals its
 reason (the demo fixtures only under =lark-org-demo=, below); the
 send path signals instead of faking.  The CLI route shells out with
-=call-process= — a desktop route; the default stays ='api= so the
-Android-compat law below keeps holding.
+=call-process= — a desktop and Termux route; the default stays
+='api= so the Android-compat law below keeps holding.
 
 * No fake data (v0.3 law)
 
@@ -86,10 +99,13 @@ The package is Android-compatible by law (Owner 2026-11-06 #hq:
 "Comms pkgs must be Android-compatible"): it is pure elisp over
 url.el — no subprocess, no graphic-only API, nothing desktop
 assumed — and it runs on the official Emacs Android app
-(org.gnu.emacs), Termux Emacs, and touch tablets.  The v0.3 CLI
-route is an opt-in desktop route (=lark-org-route= ='cli=); the
-package never requires it, and the default ='api= route stays
-pure elisp.  On a detected
+(org.gnu.emacs), Termux Emacs, and touch tablets.  The CLI route is
+opt-in and works on Termux Emacs after =M-x lark-org-cli-install=
+(the static binary lands in =$PREFIX/bin= — see =termux/README.org=);
+the org.gnu.emacs app stays on ='api= (Android 10+ forbids executing
+files from app-home directories, so no subprocess route exists
+there).  The package never requires the CLI, and the default ='api=
+route stays pure elisp.  On a detected
 touch device (=lark-org--touch-device-p=: =system-type= = 'android,
 the =TERMUX_VERSION= variable, or a =touch-screen= terminal
 parameter) =lark-org-touch-mode= binds a single tap to open, taps

@@ -67,6 +67,30 @@ per-chat `lark-org--enrich-chat` (bounded history read through
 `lark-org-open-at-point` -> `lark-org-view-render` -> history read ->
 stamp the read marker -> draw.
 
+## The two routes and the CLI installer
+
+`lark-org-route` picks the backend for every call:
+
+- `api` (default): Lark Open Platform REST over the url.el transport
+  seam, with a tenant token minted from the app id + auth-source
+  secret. Pure elisp, so the Android port runs it unchanged.
+- `cli` (v0.3): the official Lark CLI (`lark-cli`) under YOUR user
+  identity -- no app, no app secret, no app-quota billing. One
+  subprocess seam (`lark-org--cli-run`), stubbed in tests.
+
+`M-x lark-org-cli-install` (v0.4) installs the CLI with no npm:
+release lookup through the transport seam (GitHub API, skippable
+by pinning a version with a prefix argument), tarball download
+through `lark-org-cli-download-function` (default url-copy-file),
+sha256 verification against the release checksums, and an in-Elisp
+tar extraction (zlib gunzip when this Emacs has it, the `tar`
+program otherwise). Default target: Termux `$PREFIX/bin`, else
+`~/.local/bin` -- so route `cli` works on Android through Termux.
+`M-x lark-org-cli-login` then runs the CLI's interactive login in a
+term buffer. The `termux/` directory carries the same repack as a
+termux-packages recipe (`lark-cli/build.sh`) plus a plain
+`install.sh`.
+
 ## Code map
 
 Everything lives in one file plus one test file.
@@ -75,10 +99,13 @@ Everything lives in one file plus one test file.
 | --- | --- |
 | `lark-org.el` | The whole package |
 | `lark-org-http-function` (defcustom) | Transport seam; default `lark-org--http-url` over url.el |
+| `lark-org-route` (defcustom) | Backend selector: `api` (url.el REST, default) or `cli` (lark-cli passthrough, v0.3) |
+| `lark-org--cli-run`, `lark-org--cli-call` | Route `cli`'s one subprocess seam and the envelope unwrapper |
+| `lark-org-cli-install`, `lark-org-cli-login` | No-npm installer (download + sha256 + tar) and the login front end (v0.4) |
 | `lark-org--token`, `lark-org--fetch-token`, `lark-org--api-call` | tenant_access_token cache, refresh, and retry-once auth wrapper |
 | `lark-org--index-from-items`, `lark-org--message-from-item`, `lark-org--decode-content`, `lark-org--encode-text-content` | Pure Lark-JSON to plist converters |
-| `lark-org--live-index`, `lark-org--live-view`, `lark-org--live-send` | API-backed adapters behind their defcustom seams; read paths degrade to fixtures, send signals |
-| `lark-org--fixture-index`, `lark-org--fixture-view` | Deterministic offline fixtures used by tests and degraded reads |
+| `lark-org--live-index`, `lark-org--live-view`, `lark-org--live-send` | API-backed adapters behind their defcustom seams; reads signal the backend's reason (demo fixtures only under `lark-org-demo`), send signals |
+| `lark-org--fixture-index`, `lark-org--fixture-view` | Deterministic offline fixtures used by tests and the `lark-org-demo` opt-in |
 | `lark-org--read-state-ensure`, `lark-org--read-state-save`, `lark-org--stamp-read`, `lark-org--unread-count`, `lark-org--enrich-chat`, `lark-org--apply-unread` | The local read-marker / unread model (v0.2) |
 | `lark-org-render`, `lark-org` | List buffer renderer and entry command |
 | `lark-org-view-render`, `lark-org-view-append` | Conversation renderer and live-append primitive |
@@ -86,7 +113,8 @@ Everything lives in one file plus one test file.
 | `lark-org--first-tagged-position`, `lark-org--view-unread-watch`, `lark-org--view-clear-unread` | Tag scanning and the auto-clear of the unread marker |
 | `lark-org-view-compose`, `lark-org-view-send-draft`, `lark-org-send` | Draft and send paths (rule 8) |
 | `lark-org-list-mode`, `lark-org-view-mode`, `lark-org-touch-mode` | Minor modes carrying the keymaps |
-| `test.el` | 36 ERT tests, transport stubbed, no network |
+| `test.el` | 51 ERT tests, transport stubbed, no network |
+| `termux/` | Termux package (`lark-cli/build.sh`), `install.sh`, README |
 | `Makefile` | `compile` and `test` targets |
 | `README.org` | User-facing setup and disclosed limits |
 | `AI-REVIEW.org`, `CANDIDATES.org` | Provenance, review gates, crew roles (context, not code) |

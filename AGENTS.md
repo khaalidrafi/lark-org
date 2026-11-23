@@ -25,7 +25,10 @@ commit early/often, never procrastinate).
   previews, read markers (README.org; review state in AI-REVIEW.org).
 - Android-compat law (Owner): comms packages MUST run on the Emacs
   Android port (emacs 30, feature/android) — no external processes
-  Android cannot provide.
+  Android cannot provide.  The CLI route's one subprocess (lark-cli)
+  is user-installed (`M-x lark-org-cli-install' on Termux, into
+  $PREFIX/bin) and never required; the default `api' route stays
+  pure elisp.
 - Gate before any push: `make compile` and `make test` (ERT, all green).
 - Tests live in `test.el`; add tests BEFORE the fix/feature they cover.
 - Keep code simple and short; comment the WHY, not the what.
