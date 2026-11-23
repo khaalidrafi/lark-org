@@ -1,0 +1,54 @@
+#+TITLE: lark-cli on Termux
+
+Three ways to get the official Lark CLI (MIT,
+https://github.com/larksuite/cli) onto a Termux machine.  The
+release binary is a static Go build (no dynamic loader), so it
+runs on Android natively -- no proot, no glibc, no node.
+
+* 1. From Emacs (recommended for lark-org users)
+
+=M-x lark-org-cli-install=
+
+Pure Elisp (v0.4 of this package): it resolves the newest release
+through the GitHub API, downloads the tarball for this machine's
+arch, verifies the sha256 against the release =checksums.txt=, and
+untars the single =lark-cli= binary into Termux's
+=$PREFIX/bin= -- built-ins only (url.el, zlib, an in-Elisp tar
+scanner); no npm, no subprocess unless this Emacs lacks zlib (then
+=tar=, which Termux always carries).  A prefix argument
+(=C-u M-x lark-org-cli-install=) pins a version and skips the
+API call entirely.  Then =M-x lark-org-cli-login=, and
+=(setq lark-org-route 'cli')=.
+
+* 2. Plain shell (no Emacs)
+
+: sh termux/install.sh            # latest pinned version
+: sh termux/install.sh 1.0.100    # explicit version
+
+Download, sha256 check, install into =$PREFIX/bin= -- the same
+three steps as the Elisp path.
+
+* 3. As a proper Termux package
+
+=lark-cli/build.sh= is a termux-packages-format recipe (binary
+repack; =aarch64= and =x86_64=).  Build it with a termux-packages
+checkout:
+
+: git clone https://github.com/termux/termux-packages
+: cp -r termux/lark-cli termux-packages/packages/
+: cd termux-packages
+: ./build-package.sh -a aarch64 lark-cli
+: pkg install output/lark-cli_*_aarch64.deb
+
+Bumping the version: edit =TERMUX_PKG_VERSION= and the two
+=_LARK_SHA256= values in =lark-cli/build.sh= from the new
+release's =checksums.txt=.
+
+* First run
+
+: lark-cli auth login --recommend
+
+The CLI prints an authorization URL -- copy it into a browser when
+none opens (Termux ships no opener by default; =termux-open-url=
+from termux-api works if you have it).  Credentials live in the
+CLI's own store; Emacs never sees them.
