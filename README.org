@@ -6,7 +6,9 @@ v1.1 (sections 1-8):
 - =*Lark Org*= — the chat list (section 3 grammar)
 - =*Lark Org: <chat>*= — one conversation (section 4 grammar)
 
-Backend: Lark Open Platform REST.  Lark international defaults to
+Backend: Lark Open Platform REST (default route ='api=) or the
+official Lark CLI (route ='cli=, v0.3 — user identity, no app
+credentials).  Lark international defaults to
 =https://open.larksuite.com=; set =lark-org-api-base= to
 =https://open.feishu.cn= for Feishu.  Built-in libraries only — no
 backend package dependency (url.el transport behind
@@ -29,6 +31,44 @@ machine lark-org login app-secret password <secret>
 The secret and the cached tenant_access_token live in memory only;
 neither ever enters a buffer, message, or log.
 
+* CLI route (v0.3) — no app, no app-quota billing
+
+The Open Platform REST route above needs a Lark app (id + secret)
+and spends app quota — "API has costs" (Owner, 2026-11-23).  The
+official Lark CLI (https://github.com/larksuite/cli) runs the same
+/open-apis endpoints under YOUR USER identity, so lark-org can ride
+it with no app credentials at all:
+
+1. Install once: =npx @larksuite/cli@latest install=
+2. Log in once: =lark-cli auth login --recommend=
+3. =(setq lark-org-route 'cli')=, then =M-x lark-org=
+
+=lark-org-cli-program= names the binary (default =lark-cli=).
+lark-org only builds the argument vector and parses the JSON
+answer; the CLI keeps its own credentials in the OS keychain and
+they never reach Emacs.  A missing or failing CLI signals its
+reason (the demo fixtures only under =lark-org-demo=, below); the
+send path signals instead of faking.  The CLI route shells out with
+=call-process= — a desktop route; the default stays ='api= so the
+Android-compat law below keeps holding.
+
+* No fake data (v0.3 law)
+
+v0.2 silently degraded every failed read to built-in demo chats
+("Alice", "hq"), so a broken credential or a missing scope looked
+like messages you do not have (Owner, 2026-11-23: "It shows Alice
+and hq messages I don't even have").  v0.3 ends that:
+
+- A failed read signals the backend's own reason with the route
+  context (route, base URL or CLI program, and the way out); the
+  chat list renders only what the backend really answered — zero
+  chats is an empty list.
+- Route ='api= is a tenant/app identity: it lists the chats the
+  APP was added to, not your whole account.  For your own
+  messages use the CLI route above.
+- =(setq lark-org-demo t)= opts back into the demo fixtures for
+  reads — trying the UI without an account.  Sends still signal.
+
 * Install / test
 
 #+begin_example
@@ -46,7 +86,10 @@ The package is Android-compatible by law (Owner 2026-11-06 #hq:
 "Comms pkgs must be Android-compatible"): it is pure elisp over
 url.el — no subprocess, no graphic-only API, nothing desktop
 assumed — and it runs on the official Emacs Android app
-(org.gnu.emacs), Termux Emacs, and touch tablets.  On a detected
+(org.gnu.emacs), Termux Emacs, and touch tablets.  The v0.3 CLI
+route is an opt-in desktop route (=lark-org-route= ='cli=); the
+package never requires it, and the default ='api= route stays
+pure elisp.  On a detected
 touch device (=lark-org--touch-device-p=: =system-type= = 'android,
 the =TERMUX_VERSION= variable, or a =touch-screen= terminal
 parameter) =lark-org-touch-mode= binds a single tap to open, taps

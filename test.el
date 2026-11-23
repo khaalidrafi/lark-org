@@ -5,7 +5,7 @@
 ;; Author: lark-org authors
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: comm, org
-;; Version: 0.1
+;; Version: 0.3
 
 ;;; Commentary:
 
@@ -387,10 +387,11 @@ are never mutated by touch mode."
 (ert-deftest lark-org-tests-refresh-delegates ()
   "g in a view refreshes the surface it was invoked on; the fresh
 buffer is adopted (kill-rebuild law)."
-  (with-current-buffer (lark-org-tests--render-view)
-    (lark-org-view-refresh)
-    (should (derived-mode-p 'org-mode))
-    (should (string= lark-org--view-chat-id "oc_fixture_hq"))))
+  (let ((lark-org-view-fetch-function #'lark-org--fixture-view))
+    (with-current-buffer (lark-org-tests--render-view)
+      (lark-org-view-refresh)
+      (should (derived-mode-p 'org-mode))
+      (should (string= lark-org--view-chat-id "oc_fixture_hq")))))
 
 ;;;; Touch adaptation (section 7)
 
@@ -401,7 +402,8 @@ an error -- no hover-dependent feature."
     (goto-char (point-min))
     (org-next-visible-heading 1)
     (should (string= (lark-org--chat-id-here) "oc_fixture_alice"))
-    (let ((buf (lark-org-view-render "oc_fixture_alice")))
+    (let* ((lark-org-view-fetch-function #'lark-org--fixture-view)
+           (buf (lark-org-view-render "oc_fixture_alice")))
       ;; The fixture conversation is deterministic: whatever the chat
       ;; id asked for, the fixture renders its own hq transcript.
       (should (string= (buffer-name buf) "*Lark Org: hq*")))))
@@ -549,9 +551,10 @@ the converters keep the v0.1 placeholder values untouched."
 (ert-deftest lark-org-tests-view-open-stamps-read ()
   "Rendering a view stamps the chat's marker past its newest message."
   (lark-org-tests--with-markers
-    (let ((newest (car (last (plist-get
-                              (lark-org--fixture-view "oc_fixture_hq")
-                              :messages)))))
+    (let* ((lark-org-view-fetch-function #'lark-org--fixture-view)
+           (newest (car (last (plist-get
+                               (lark-org--fixture-view "oc_fixture_hq")
+                               :messages)))))
       (lark-org-view-render "oc_fixture_hq")
       (should (= (cdr (assoc "oc_fixture_hq" lark-org--read-state))
                  (float-time (plist-get newest :time)))))))
@@ -599,6 +602,190 @@ the converters keep the v0.1 placeholder values untouched."
              "^[0-9][0-9]\\.[0-9][0-9]\\.[0-9][0-9]$"
              (lark-org--relative-time (seconds-to-time
                                        (- now 1209600)))))))
+
+;;;; CLI route (v0.3: official Lark CLI, user identity, no app billing)
+
+(defun lark-org-tests--cli-wrap (raw)
+  "Wrap RAW, a JSON string, in the lark-cli success envelope."
+  (concat "{\"ok\":true,\"identity\":\"user\",\"data\":" raw "}"))
+
+(ert-deftest lark-org-tests-cli-argv ()
+  "Route `cli' rides lark-cli's raw `api' passthrough: global
+--format json, METHOD, /open-apis PATH, then --params/--data as
+JSON, and no flags at all when there is nothing to send."
+  (should (equal (lark-org--cli-argv "GET" "im/v1/chats"
+                                    (list (cons "page_size" 50)) nil)
+                 '("--format" "json" "api" "GET" "/open-apis/im/v1/chats"
+                   "--params" "{\"page_size\":50}")))
+  (should (equal (lark-org--cli-argv
+                  "POST" "im/v1/messages" nil
+                  (list (cons "receive_id" "oc_1")))
+                 '("--format" "json" "api" "POST"
+                   "/open-apis/im/v1/messages"
+                   "--data" "{\"receive_id\":\"oc_1\"}")))
+  (should (equal (lark-org--cli-argv "GET" "im/v1/chats" nil nil)
+                 '("--format" "json" "api" "GET"
+                   "/open-apis/im/v1/chats"))))
+
+(ert-deftest lark-org-tests-cli-call-unwraps ()
+  "The CLI envelope is unwrapped and the raw API envelope checked,
+so adapters receive the standard object through both routes; a
+non-zero code inside the passthrough still signals."
+  (cl-letf (((symbol-function 'lark-org--cli-run)
+             (lambda (_argv)
+               (cons 0 (lark-org-tests--cli-wrap
+                        "{\"code\":0,\"msg\":\"success\",\"data\":{\"\
+items\":[{\"chat_id\":\"oc_a\"}]}}")))))
+    (let ((lark-org-route 'cli))
+      (let ((obj (lark-org--api-call "GET" "im/v1/chats" nil nil)))
+        (should (equal (alist-get 'code obj) 0))
+        (should (equal (alist-get 'items (alist-get 'data obj))
+                       '(((chat_id . "oc_a"))))))))
+  (cl-letf (((symbol-function 'lark-org--cli-run)
+             (lambda (_argv)
+               (cons 0 (lark-org-tests--cli-wrap
+                        "{\"code\":230001,\"msg\":\"auth forbidden\"}")))))
+    (let ((lark-org-route 'cli))
+      (should-error (lark-org--api-call "GET" "im/v1/chats" nil nil)
+                    :type 'lark-org-api-error))))
+
+(ert-deftest lark-org-tests-cli-error-signals ()
+  "A CLI-level failure (ok:false, non-zero exit) signals with the
+CLI's message text; the read adapters re-signal with route context
+(the honest-read law), the write path never fakes, and only an
+explicit `lark-org-demo' serves the fixtures."
+  (cl-letf (((symbol-function 'lark-org--cli-run)
+             (lambda (_argv)
+               (cons 1 "{\"ok\":false,\"identity\":\"user\",\"error\":{\"type\":\"api\",\"message\":\"login required\",\"code\":9}}"))))
+    (let ((lark-org-route 'cli)
+          (lark-org-app-id "")
+          (lark-org-demo nil))
+      (let ((err (should-error (lark-org--live-send "oc_1" "hi"))))
+        (should (string-match-p "login required" (cadr err))))
+      (let ((err (should-error (lark-org--live-index)
+                               :type 'lark-org-api-error)))
+        (should (string-match-p "login required" (cadr err)))
+        (should (string-match-p "route `cli'" (cadr err))))
+      (let ((lark-org-demo t))
+        (should (equal (mapcar (lambda (c) (plist-get c :id))
+                               (lark-org--live-index))
+                       '("oc_fixture_alice" "oc_fixture_hq")))))))
+
+(ert-deftest lark-org-tests-cli-live-index ()
+  "Route `cli' end to end: the chats call goes through the CLI
+seam exactly once with the passthrough argv, needs NO app
+credentials, never touches the tenant-token cache, and the raw
+envelope feeds the standard converters."
+  (let ((calls nil))
+    (cl-letf (((symbol-function 'lark-org--cli-run)
+               (lambda (argv)
+                 (push argv calls)
+                 (cons 0 (lark-org-tests--cli-wrap
+                          "{\"code\":0,\"data\":{\"items\":[{\"chat_id\":\"oc_cli\",\"name\":\"cli-hq\",\"chat_type\":\"group\"}]}}"))))
+              (lark-org-route 'cli)
+              (lark-org-app-id "")
+              (lark-org--token nil)
+              (lark-org--token-expiry 0)
+              (lark-org-markers nil)
+              (lark-org-page-size 50))
+      (let ((idx (lark-org--live-index)))
+        (should (equal (mapcar (lambda (c) (plist-get c :id)) idx)
+                       '("oc_cli")))
+        (should (equal (plist-get (car idx) :name) "cli-hq"))
+        (should (= 1 (length calls)))
+        (should (equal (car calls)
+                       '("--format" "json" "api" "GET"
+                         "/open-apis/im/v1/chats"
+                         "--params" "{\"page_size\":50}")))
+        (should (null lark-org--token))))))
+
+(ert-deftest lark-org-tests-cli-send-no-app-id ()
+  "Route `cli' sends with no app credentials at all: the guard
+passes, the CLI seam gets the exact send argv (double-encoded
+content pinned), and the double envelope yields the message id."
+  (cl-letf (((symbol-function 'lark-org--cli-run)
+             (lambda (argv)
+               (should (equal argv
+                              '("--format" "json" "api" "POST"
+                                "/open-apis/im/v1/messages"
+                                "--params"
+                                "{\"receive_id_type\":\"chat_id\"}"
+                                "--data"
+                                "{\"receive_id\":\"oc_1\",\"msg_type\":\"text\",\"content\":\"{\\\"text\\\":\\\"hi\\\"}\"}")))
+               (cons 0 (lark-org-tests--cli-wrap
+                        "{\"code\":0,\"data\":{\"message_id\":\"om_cli_1\"}}"))))
+            (lark-org-route 'cli)
+            (lark-org-app-id ""))
+    (should (string= (lark-org--live-send "oc_1" "hi") "om_cli_1"))))
+
+(ert-deftest lark-org-tests-cli-missing-binary-hints ()
+  "A missing lark-cli binary fails with the install hint; reads
+signal the wrapped hint -- never a silent fixture -- writes signal
+too, and demo mode is the only fixture path."
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (_name) nil))
+            (lark-org-route 'cli)
+            (lark-org-demo nil))
+    (let ((err (should-error (lark-org--live-send "oc_1" "hi"))))
+      (should (string-match-p "@larksuite/cli" (cadr err))))
+    (let ((err (should-error (lark-org--live-index)
+                             :type 'lark-org-api-error)))
+      (should (string-match-p "@larksuite/cli" (cadr err))))
+    (let ((lark-org-demo t))
+      (should (equal (mapcar (lambda (c) (plist-get c :id))
+                             (lark-org--live-index))
+                     '("oc_fixture_alice" "oc_fixture_hq"))))))
+
+;;;; Honest reads (v0.3 law: signal the reason, never fake chats)
+
+(ert-deftest lark-org-tests-api-failure-signals ()
+  "Route `api' with a failing transport re-signals
+`lark-org-api-error' carrying the backend reason and the route
+context -- the Alice/hq silent-fixture incident never comes back."
+  (cl-letf (((symbol-function 'lark-org--http-url)
+             (lambda (_m _u _h _b) (error "connection refused")))
+            ((symbol-function 'lark-org--app-secret)
+             (lambda () "fixture-secret-never-real")))
+    (let ((lark-org-route 'api)
+          (lark-org-app-id "cli_x")
+          (lark-org-demo nil)
+          (lark-org--token nil)
+          (lark-org--token-expiry 0)
+          (lark-org-markers nil))
+      (let ((err (should-error (lark-org--live-index)
+                               :type 'lark-org-api-error)))
+        (should (string-match-p "connection refused" (cadr err)))
+        (should (string-match-p "route `api'" (cadr err))))
+      (let ((err (should-error (lark-org--live-view "oc_1")
+                               :type 'lark-org-api-error)))
+        (should (string-match-p "connection refused" (cadr err)))))))
+
+(ert-deftest lark-org-tests-preflight-unconfigured ()
+  "An unconfigured route `api' fails fast with a user-error naming
+the missing pieces and the no-app way out; demo mode reads the
+fixtures with no credentials at all."
+  (let ((lark-org-route 'api)
+        (lark-org-app-id "")
+        (lark-org-demo nil))
+    (let ((err (should-error (lark-org--live-index)
+                             :type 'user-error)))
+      (should (string-match-p "lark-org-app-id" (cadr err)))
+      (should (string-match-p "lark-org-route" (cadr err))))
+    (let ((err (should-error (lark-org--live-view "oc_1")
+                             :type 'user-error)))
+      (should (string-match-p "auth-source" (cadr err))))
+    (let ((lark-org-demo t))
+      (should (equal (mapcar (lambda (c) (plist-get c :id))
+                             (lark-org--live-index))
+                     '("oc_fixture_alice" "oc_fixture_hq")))
+      (should (equal (lark-org--live-view nil)
+                     (lark-org--fixture-view nil))))))
+
+(ert-deftest lark-org-tests-live-view-nil-id-signals ()
+  "A nil chat id on the honest path signals: there is nothing to
+fetch and nothing to fake."
+  (let ((lark-org-demo nil))
+    (should-error (lark-org--live-view nil))))
 
 (provide 'lark-org-tests)
 ;;; lark-org-tests.el ends here

@@ -5,7 +5,7 @@
 ;; Author: lark-org authors
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: comm, org
-;; Version: 0.2
+;; Version: 0.3
 
 ;;; Commentary:
 
@@ -32,15 +32,28 @@
 ;; (`lark-org-secret-auth-source' selects the host/user pair.)  The
 ;; secret and the cached tenant token live in memory only; neither
 ;; ever enters a buffer, message, or log (standard section 9.10).
+;; The tenant identity also means the app route lists the chats the
+;; APP was added to, not your whole account -- for your own
+;; messages use route `cli'.
+;;
+;; Route `cli' (v0.3) needs none of that: the official Lark CLI
+;; (https://github.com/larksuite/cli, command `lark-cli') runs the
+;; same /open-apis endpoints under YOUR USER identity --
+;; `lark-cli auth login' once, credentials in the OS keychain.  No
+;; Lark app, no app secret, no tenant token, no Open Platform
+;; app-quota billing (the Owner's 2026-11-23 directive: "since API
+;; has costs").  Set `lark-org-route' to 'cli.
 ;;
 ;; Design law:
 ;; - Add-on, one .el, no backend in Package-Requires (section 1); the
 ;;   transport is built-in url.el behind `lark-org-http-function'.
-;; - Read adapters degrade to deterministic fixtures when the API is
-;;   unreachable or unconfigured, so offline behavior and the ERT
-;;   suites stay stable; the send adapter is the one deliberate
-;;   exception -- a write path never pretends to succeed (section 4
-;;   rule 8).
+;; - Read adapters never fake data (the Alice/hq law, Owner
+;;   2026-11-23: "It shows Alice and hq messages I don't even
+;;   have"): a failed read signals the backend's own reason, the
+;;   deterministic demo fixtures live behind the explicit
+;;   `lark-org-demo' opt-in, and the ERT suite stubs the transport
+;;   seams.  The send adapter always signaled -- a write path never
+;;   pretends to succeed (section 4 rule 8).
 ;; - Group membership is user data (`lark-org-group-alist', first
 ;;   match wins, fallback group), never hard-coded (section 3 rule 1).
 ;; - Outgoing detection: a message whose sender id equals
@@ -168,12 +181,56 @@ failure.  Bind a stub for offline tests (standard section 9.9)."
   :type 'function
   :group 'lark-org)
 
+(defcustom lark-org-route 'api
+  "Backend route for every API call (v0.3).
+
+`api' (default): Lark Open Platform REST over url.el with the app
+id + auth-source secret and a cached tenant token.  Pure elisp --
+the Android-compat law holds: nothing required that the Emacs
+Android port cannot provide.
+
+`cli': the official Lark CLI (https://github.com/larksuite/cli,
+command `lark-org-cli-program', installed with `npx
+@larksuite/cli@latest install', logged in once with `lark-cli
+auth login').  The CLI keeps its own credentials in the OS
+keychain and runs the same /open-apis endpoints under YOUR USER
+identity: no Lark app, no app secret, no tenant token, and no
+Open Platform app-quota billing.  This route shells out
+(call-process), so it is a desktop route; a missing or failing
+CLI signals its reason like any unreachable backend (the demo
+fixtures only under `lark-org-demo'), and the send path signals
+(section 4 rule 8)."
+  :package-version '(lark-org . "0.3.0")
+  :type '(choice (const :tag "Open Platform REST API (default, Android-safe)" api)
+                 (const :tag "Official Lark CLI (user identity, no app billing)" cli))
+  :group 'lark-org)
+
+(defcustom lark-org-cli-program "lark-cli"
+  "Program name of the official Lark CLI, route `cli'.
+Found through `executable-find'; lark-org never sees a credential
+(the CLI's keychain holds them)."
+  :package-version '(lark-org . "0.3.0")
+  :type 'string
+  :group 'lark-org)
+
+(defcustom lark-org-demo nil
+  "Non-nil to serve the built-in demo chats on a failed read.
+Default nil, the honest-read law (Owner 2026-11-23): when the
+backend fails or is unconfigured, reads signal the backend's own
+reason instead of showing chats you do not have.  Set this to
+non-nil to try the UI without an account: reads then serve the
+deterministic demo fixtures (Alice, hq); the send path still
+signals -- a write never pretends to succeed."
+  :package-version '(lark-org . "0.3.0")
+  :type 'boolean
+  :group 'lark-org)
+
 (defcustom lark-org-index-function #'lark-org--live-index
   "Function returning the chat index as a list of plists with keys
 :id :group :name :unread :mentions :muted :last-time :last-dir
-:last-text.  The default asks the Lark API and degrades to the
-deterministic fixture when the API is unreachable or
-unconfigured, so offline behavior and tests stay stable."
+:last-text.  The default asks the Lark API and signals the
+backend's reason on failure (v0.3 honest-read law); the demo
+fixtures serve only under `lark-org-demo'."
   :type 'function
   :group 'lark-org)
 
@@ -182,7 +239,9 @@ unconfigured, so offline behavior and tests stay stable."
 plist with keys :id :name :kind :messages (:kind one of \"im\",
 \"group\", \"channel\"; messages plists with keys :id :time :author
 :handle :text :out :unread :mention).  The default asks the Lark
-API and degrades to the deterministic fixture on failure."
+API and signals the backend's reason on failure (v0.3
+honest-read law); the demo fixtures serve only under
+`lark-org-demo'."
   :type 'function
   :group 'lark-org)
 
@@ -308,6 +367,61 @@ the trap this crew already fixed once; keep the guard)."
                        (url-hexify-string (format "%s" (cdr kv)))))
              query "&"))))
 
+;;;; CLI route (official Lark CLI: user identity, no app billing)
+
+(defun lark-org--cli-run (argv)
+  "Run the Lark CLI with ARGV; return (EXIT . OUTPUT).
+The one subprocess seam (standard section 9.9): the ERT suite
+stubs this function, so no test spawns a process.  call-process
+cannot be interrupted by a timer, so the CLI's own timeouts are
+the timeouts."
+  (unless (executable-find lark-org-cli-program)
+    (error "lark-org: %s not found (route `cli': npx @larksuite/cli@latest install, then %s auth login)"
+           lark-org-cli-program lark-org-cli-program))
+  (with-temp-buffer
+    (let ((exit (apply #'call-process lark-org-cli-program
+                       nil (list (current-buffer) t) nil argv)))
+      (cons exit (buffer-string)))))
+
+(defun lark-org--cli-argv (method path query body)
+  "Build the `lark-cli api' argument list for one call.
+`api' is the CLI's raw passthrough: METHOD and /open-apis PATH,
+then --params/--data carrying the same JSON the url.el route puts
+on the wire."
+  (append
+   (list "--format" "json" "api" method (concat "/open-apis/" path))
+   (when query (list "--params" (json-encode query)))
+   (when body (list "--data" (json-encode body)))))
+
+(defun lark-org--cli-call (method path query body)
+  "One API call through the Lark CLI; return the raw envelope.
+The CLI wraps every answer as {\"ok\":bool,\"data\":...}; the raw
+API envelope sits inside data, runs the standard non-zero-code
+check, and is returned exactly like the url.el route returns it,
+so the adapters cannot tell the routes apart.  A CLI-level
+failure (non-zero exit, ok:false, unparseable output) signals;
+read adapters re-signal with route context (the demo fixtures
+only under `lark-org-demo'), the send path never fakes."
+  (pcase-let ((`(,exit . ,out)
+               (lark-org--cli-run
+                (lark-org--cli-argv method path query body))))
+    (let ((obj (ignore-errors (lark-org--decode-json out))))
+      (if (and obj (lark-org--truthy (alist-get 'ok obj)))
+          (let ((inner (alist-get 'data obj)))
+            (cond ((assq 'code inner)
+                   (lark-org--check-envelope inner)
+                   inner)
+                  (inner)
+                  (t (error "lark-org: lark-cli returned no data"))))
+        (error "lark-org: lark-cli exit %s: %s"
+               exit
+               (cond ((and obj (alist-get 'error obj))
+                      (lark-org--s
+                       (alist-get 'message (alist-get 'error obj))))
+                     ((stringp out)
+                      (substring out 0 (min 120 (length out))))
+                     (t "no output")))))))
+
 ;;;; Auth (tenant_access_token; memory only, never logged)
 
 (defvar lark-org--token nil
@@ -360,28 +474,34 @@ expired; the call is retried once with a fresh token.")
 
 (defun lark-org--api-call (method path query &optional body authed retried)
   "Call PATH with METHOD, QUERY alist and JSON BODY.
-When AUTHED, send the tenant token; on a token-error code refresh
-the cache and retry ONCE (bounded).  Returns the decoded object."
-  (let* ((url (concat (lark-org--api-url path)
-                      (lark-org--query-string query)))
-         (headers (cons (cons "Content-Type"
-                              "application/json; charset=utf-8")
-                        (when authed
-                          (list (cons "Authorization"
-                                      (concat "Bearer "
-                                              (lark-org--token)))))))
-         (obj (lark-org--decode-json
-               (funcall lark-org-http-function
-                        method url headers
-                        (and body (json-encode body))))))
-    (let ((code (alist-get 'code obj)))
-      (if (and authed (not retried) (numberp code)
-               (memq code lark-org--token-error-codes))
-          (progn
-            (setq lark-org--token nil lark-org--token-expiry 0)
-            (lark-org--api-call method path query body authed 'retried))
-        (lark-org--check-envelope obj)
-        obj))))
+Route `api' (default): url.el transport; when AUTHED, send the
+tenant token and on a token-error code refresh the cache and
+retry ONCE (bounded).  Route `cli': the same endpoint through
+the official Lark CLI under the user identity -- AUTHED/RETRIED
+are moot, the CLI manages its own auth.  Returns the decoded
+object either way."
+  (if (eq lark-org-route 'cli)
+      (lark-org--cli-call method path query body)
+    (let* ((url (concat (lark-org--api-url path)
+                        (lark-org--query-string query)))
+           (headers (cons (cons "Content-Type"
+                                "application/json; charset=utf-8")
+                          (when authed
+                            (list (cons "Authorization"
+                                        (concat "Bearer "
+                                                (lark-org--token)))))))
+           (obj (lark-org--decode-json
+                 (funcall lark-org-http-function
+                          method url headers
+                          (and body (json-encode body))))))
+      (let ((code (alist-get 'code obj)))
+        (if (and authed (not retried) (numberp code)
+                 (memq code lark-org--token-error-codes))
+            (progn
+              (setq lark-org--token nil lark-org--token-expiry 0)
+              (lark-org--api-call method path query body authed 'retried))
+            (lark-org--check-envelope obj)
+            obj)))))
 
 (defun lark-org--fixture-index ()
   "Deterministic chat index for tests and demos."
@@ -533,27 +653,79 @@ stamps the marker past the newest message once this renders."
       (setq msgs (lark-org--apply-unread chat-id msgs)))
     (list :id chat-id :name name :kind kind :messages msgs)))
 
-;;;; Live adapters (API-backed, fixture degradation on read)
+;;;; Live adapters (API-backed; honest reads, demo opt-in)
+
+(defun lark-org--configured-p ()
+  "Non-nil when the current route has what a first call needs.
+Route `cli' carries its own credentials; route `api' needs the
+app id (the secret's absence stays `lark-org--app-secret's own
+readable user-error)."
+  (or (eq lark-org-route 'cli)
+      (and (stringp lark-org-app-id)
+           (not (equal lark-org-app-id "")))))
+
+(defun lark-org--preflight ()
+  "Signal a readable `user-error' when route `api' cannot run now.
+A missing app id would otherwise surface as a cryptic token-call
+failure; everything else is the API call's own error to report.
+Demo mode never gets here: it needs no credentials at all."
+  (when (and (eq lark-org-route 'api)
+             (not (lark-org--configured-p)))
+    (user-error
+     "lark-org: route `api' needs credentials -- set `lark-org-app-id' and the auth-source secret (machine lark-org login app-secret password <secret>); the app also only sees chats it was added to.  Your own messages, no app: (setq lark-org-route 'cli) after `lark-cli auth login'")))
+
+(defun lark-org--read-fail (what err)
+  "Re-signal the failed read WHAT with route context from ERR.
+The v0.3 honest-read law: a read failure names the route, the
+backend's own reason, and the way out -- it never becomes a
+silent fixture."
+  (signal 'lark-org-api-error
+          (list (format
+                 "%s unreadable (route `%s', %s): %s -- app route: check credentials, im:message scopes, network; your own messages, no app: (setq lark-org-route 'cli)"
+                 what
+                 lark-org-route
+                 (if (eq lark-org-route 'cli)
+                     lark-org-cli-program
+                   lark-org-api-base)
+                 (error-message-string err)))))
+
+(defun lark-org--live-index-1 ()
+  "Fetch and convert the chat index; no error handling here."
+  (let* ((data (alist-get 'data
+                          (lark-org--api-call
+                           "GET" "im/v1/chats"
+                           (list (cons "page_size"
+                                       lark-org-page-size))
+                           nil 'authed)))
+         (items (alist-get 'items data)))
+    (if (not (listp items))
+        (error "lark-org: chats response carries no items list")
+      (let ((chats (lark-org--index-from-items items)))
+        (if lark-org-markers
+            (mapcar #'lark-org--enrich-chat chats)
+          chats)))))
 
 (defun lark-org--live-index ()
-  "Chat index from the Lark API; degrade to the fixture on error.
-A live API answering zero chats renders an empty list -- reality,
-not fixture."
-  (condition-case nil
-      (let* ((data (alist-get 'data
-                              (lark-org--api-call
-                               "GET" "im/v1/chats"
-                               (list (cons "page_size"
-                                           lark-org-page-size))
-                               nil 'authed)))
-             (items (alist-get 'items data)))
-        (if (listp items)
-            (let ((chats (lark-org--index-from-items items)))
-              (if lark-org-markers
-                  (mapcar #'lark-org--enrich-chat chats)
-                chats))
-          (lark-org--fixture-index)))
-    (error (lark-org--fixture-index))))
+  "Chat index from the Lark backend; signal on failure (v0.3 law).
+A read never fakes data: the backend's error is re-signaled with
+route context (the Alice/hq incident ended silent degradation).
+`lark-org-demo' non-nil serves the demo fixtures instead --
+trying the UI without an account, with no credentials needed.
+A live backend answering zero chats renders an empty list --
+reality, not fixture."
+  (cond ((and lark-org-demo
+              (not (lark-org--configured-p)))
+         (lark-org--fixture-index))
+        (lark-org-demo
+         (condition-case nil
+             (lark-org--live-index-1)
+           (error (lark-org--fixture-index))))
+        (t
+         (lark-org--preflight)
+         (condition-case err
+             (lark-org--live-index-1)
+           (user-error (signal (car err) (cdr err)))
+           (error (lark-org--read-fail "chat list" err))))))
 
 (defun lark-org--chat-meta (chat-id)
   "Return the chats-endpoint entry for CHAT-ID, or nil."
@@ -595,31 +767,51 @@ not fixture."
             (throw 'done out))))
       out)))
 
+(defun lark-org--live-view-1 (chat-id)
+  "Fetch and convert conversation CHAT-ID; no error handling here."
+  (let* ((meta (lark-org--chat-meta chat-id))
+         (name (if (and meta (alist-get 'name meta))
+                   (lark-org--s (alist-get 'name meta))
+                 chat-id))
+         (kind (lark-org--kind-of
+                (lark-org--s (and meta
+                                  (alist-get 'chat_type meta)))))
+         (items (lark-org--history-items chat-id)))
+    (lark-org--view-from-items chat-id name kind items)))
+
 (defun lark-org--live-view (&optional chat-id)
-  "Conversation CHAT-ID from the Lark API; degrade on error.
-A nil chat id goes straight to the fixture (nothing to fetch)."
-  (if (not chat-id)
-      (lark-org--fixture-view chat-id)
-    (condition-case nil
-        (let* ((meta (lark-org--chat-meta chat-id))
-               (name (if (and meta (alist-get 'name meta))
-                         (lark-org--s (alist-get 'name meta))
-                       chat-id))
-               (kind (lark-org--kind-of
-                      (lark-org--s (and meta
-                                        (alist-get 'chat_type meta)))))
-               (items (lark-org--history-items chat-id)))
-          (lark-org--view-from-items chat-id name kind items))
-      (error (lark-org--fixture-view chat-id)))))
+  "Conversation CHAT-ID from the Lark backend; signal on failure.
+A nil CHAT-ID serves the demo fixture in demo mode, else signals
+(there is nothing to fetch).  Otherwise the v0.3 honest-read law:
+the backend's error is re-signaled with route context, never a
+silent fixture; `lark-org-demo' non-nil serves the demo fixtures
+instead."
+  (cond ((and (not chat-id) lark-org-demo)
+         (lark-org--fixture-view chat-id))
+        ((not chat-id)
+         (error "lark-org: no chat id to fetch"))
+        ((and lark-org-demo (not (lark-org--configured-p)))
+         (lark-org--fixture-view chat-id))
+        (lark-org-demo
+         (condition-case nil
+             (lark-org--live-view-1 chat-id)
+           (error (lark-org--fixture-view chat-id))))
+        (t
+         (lark-org--preflight)
+         (condition-case err
+             (lark-org--live-view-1 chat-id)
+           (user-error (signal (car err) (cdr err)))
+           (error (lark-org--read-fail "chat view" err))))))
 
 (defun lark-org--live-send (chat-id text)
   "Send TEXT to CHAT-ID via the Lark API.
 Returns the backend message_id for the :MSG-ID: stamp; signals on
 any failure so the draft keeps its :draft: tag (section 4 rule 8)
 -- a write path must never degrade silently to the fixture."
-  (unless (and (stringp lark-org-app-id)
-               (not (equal lark-org-app-id "")))
-    (user-error "lark-org: lark-org-app-id is unset; cannot send"))
+  (unless (or (eq lark-org-route 'cli)
+              (and (stringp lark-org-app-id)
+                   (not (equal lark-org-app-id ""))))
+    (user-error "lark-org: lark-org-app-id is unset; cannot send (route `cli' needs no app)"))
   (let ((obj (lark-org--api-call
               "POST" "im/v1/messages"
               (list (cons "receive_id_type" "chat_id"))
@@ -638,8 +830,11 @@ any failure so the draft keeps its :draft: tag (section 4 rule 8)
 ;; stamped when a view of the chat renders, persisted between
 ;; sessions, and measured against bounded history on every list
 ;; refresh.  Everything here is pure except the two functions that
-;; touch the file, and every read path degrades to the v0.1
-;; placeholders; only the send path is allowed to signal.
+;; touch the file.  A per-chat history failure degrades only that
+;; chat's preview to the v0.1 placeholders inside an otherwise
+;; successful render; the chat list itself never falls back to
+;; fixtures (v0.3 honest-read law), and the send path always
+;; signals.
 
 (defvar lark-org--read-state nil
   "Read markers, an alist of (CHAT-ID . UNIX-SECONDS).")
@@ -705,8 +900,10 @@ not date cannot be proven unread."
   "Fill CHAT's preview and unread tag from bounded history.
 One history read through `lark-org-history-function', at most
 `lark-org-max-pages' pages -- the disclosed cost of a real
-preview.  On any failure the chat keeps the v0.1 placeholders: a
-read path degrades, it never signals.  A chat seen for the first
+preview.  On any failure the chat keeps the v0.1 placeholders --
+a preview is metadata, not the chat list itself, and the render
+must survive one chat's history failing (the list never fakes
+chats, v0.3 law).  A chat seen for the first
 time gets its baseline stamped at the newest message, so the
 count starts from what arrives after this refresh, not from the
 beginning of the conversation."
