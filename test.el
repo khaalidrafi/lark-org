@@ -736,6 +736,287 @@ too, and demo mode is the only fixture path."
                              (lark-org--live-index))
                      '("oc_fixture_alice" "oc_fixture_hq"))))))
 
+;;;; CLI install (v0.4: one command, no npm -- Termux first-class)
+
+(defun lark-org-tests--tar-member (name mode data)
+  "One tar member: a 512-byte ustar header for NAME/MODE, DATA,
+then data padding -- checksum computed like tar's own."
+  (let* ((h (make-string 512 0))
+         (size (length data)))
+    (store-substring h 0 name)
+    (store-substring h 100 (format "%07o " mode))
+    (store-substring h 108 "0000000")
+    (store-substring h 116 "0000000")
+    (store-substring h 124 (format "%011o " size))
+    (store-substring h 136 "00000000000 ")
+    (store-substring h 148 "        ")
+    (aset h 156 ?0)
+    (store-substring h 257 "ustar")
+    (aset h 262 0)
+    (store-substring h 263 "00")
+    (let ((sum 0))
+      (dotimes (i 512)
+        (setq sum (+ sum (aref h i))))
+      (store-substring h 148 (format "%06o\0 " sum)))
+    (let ((pad (- 512 (% size 512))))
+      (concat h data (make-string (if (= pad 512) 0 pad) 0)))))
+
+(defun lark-org-tests--make-tar (members)
+  "A plain (uncompressed) tar image from ((NAME MODE DATA)...)."
+  (concat (apply #'concat
+                 (mapcar (lambda (m)
+                           (apply #'lark-org-tests--tar-member m))
+                         members))
+          (make-string 1024 0)))
+
+(ert-deftest lark-org-tests-cli-asset-suffix ()
+  "`system-configuration' maps onto upstream asset suffixes:
+Termux reports linux/aarch64 exactly like a desktop, and darwin
+builds exist too."
+  (let ((system-configuration "aarch64-unknown-linux-android"))
+    (should (equal (lark-org-cli--asset-suffix) "linux-arm64")))
+  (let ((system-configuration "x86_64-pc-linux-gnu"))
+    (should (equal (lark-org-cli--asset-suffix) "linux-amd64")))
+  (let ((system-configuration "riscv64-unknown-linux-gnu"))
+    (should (equal (lark-org-cli--asset-suffix) "linux-riscv64")))
+  (let ((system-configuration "aarch64-apple-darwin23.6.0"))
+    (should (equal (lark-org-cli--asset-suffix) "darwin-arm64"))))
+
+(ert-deftest lark-org-tests-cli-checksum-for ()
+  "checksums.txt lines resolve per asset name; junk lines and
+blanks are skipped, unknown assets read as nil."
+  (let ((text (concat
+               "1111111111111111111111111111111111111111111111111111111111111111  lark-cli-1.0.100-linux-amd64.tar.gz\n"
+               "2222222222222222222222222222222222222222222222222222222222222222  lark-cli-1.0.100-linux-arm64.tar.gz\n"
+               "\n"
+               "not a checksum line\n")))
+    (should (equal
+             (lark-org-cli--checksum-for
+              text "lark-cli-1.0.100-linux-arm64.tar.gz")
+             "2222222222222222222222222222222222222222222222222222222222222222"))
+    (should (null (lark-org-cli--checksum-for text "missing.tar.gz")))))
+
+(ert-deftest lark-org-tests-cli-tar-find-member ()
+  "The in-elisp tar scanner returns start/size/mode for the member
+-- by basename for a flat tarball, by full name inside a directory
+-- and stops at the end marker instead of running off the image."
+  (let ((tar (lark-org-tests--make-tar
+              '(("lark-cli" 493 "#!/system/bin/sh\n")
+                ("README.md" 420 "upstream docs\n")
+                ("lark-cli-1.0.100-linux-arm64/lark-cli" 493 "nested\n")))))
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (insert tar)
+      (let ((found (lark-org-cli--tar-find-member "lark-cli")))
+        (should (equal (nth 2 found) 493))
+        (should (equal (buffer-substring-no-properties
+                        (nth 0 found) (+ (nth 0 found) (nth 1 found)))
+                       "#!/system/bin/sh\n")))
+      (let ((found (lark-org-cli--tar-find-member
+                    "lark-cli-1.0.100-linux-arm64/lark-cli")))
+        (should found)
+        (should (equal (buffer-substring-no-properties
+                        (nth 0 found) (+ (nth 0 found) (nth 1 found)))
+                       "nested\n")))
+      (should (null (lark-org-cli--tar-find-member "missing"))))))
+
+(ert-deftest lark-org-tests-cli-install ()
+  "`lark-org-cli-install' downloads, verifies and installs: the
+release lookup rides the transport seam, the tarball the download
+seam; the sha256 gate, tar scan, file mode and contents are all
+real (the fixture tar is plain -- the gzip path has its own test)."
+  (let* ((payload "#!/system/bin/sh\nfake lark-cli for lark-org tests\n")
+         (tar (lark-org-tests--make-tar
+               (list (list "README.md" 420 "upstream docs\n")
+                     (list "lark-cli" 493 payload))))
+         (sha (secure-hash 'sha256 tar))
+         (release (json-encode
+                   (list
+                    (cons "tag_name" "v1.0.100")
+                    (cons "assets"
+                          (list
+                           (list
+                            (cons "name"
+                                  "lark-cli-1.0.100-linux-arm64.tar.gz")
+                            (cons "browser_download_url"
+                                  "https://fixtures.invalid/lark-cli.tar.gz"))
+                           (list
+                            (cons "name" "checksums.txt")
+                            (cons "browser_download_url"
+                                  "https://fixtures.invalid/checksums.txt")))))))
+         (srcdir (make-temp-file "lark-org-cli-src" t))
+         ;; Fixture names carry no compression suffix: writing .gz
+         ;; through with-temp-file rides auto-compression-mode.
+         (tarball (expand-file-name "fixture.tar" srcdir))
+         (sums (expand-file-name "checksums.txt" srcdir))
+         (bindir (make-temp-file "lark-org-cli-bin" t)))
+    (unwind-protect
+        (progn
+          (with-temp-file tarball (insert tar))
+          (with-temp-file sums
+            (insert sha "  lark-cli-1.0.100-linux-arm64.tar.gz\n"))
+          (cl-letf ((lark-org-http-function
+                     (lambda (_method url _headers _body)
+                       (should (string-match-p "api.github.com" url))
+                       release))
+                    (lark-org-cli-download-function
+                     (lambda (url dest)
+                       (copy-file (if (string-suffix-p "checksums.txt" url)
+                                      sums tarball)
+                                  dest t)))
+                    (lark-org-cli-install-dir bindir)
+                    (lark-org-cli-program "lark-org-cli-test")
+                    (system-configuration
+                     "aarch64-unknown-linux-android"))
+            (lark-org-cli-install)
+            (let ((dest (expand-file-name "lark-org-cli-test" bindir)))
+              (should (file-exists-p dest))
+              (should (file-executable-p dest))
+              (should (equal (with-temp-buffer
+                               (insert-file-contents-literally dest)
+                               (buffer-string))
+                             payload)))))
+      (delete-directory srcdir t)
+      (delete-directory bindir t))))
+
+(ert-deftest lark-org-tests-cli-install-rejects-bad-sum ()
+  "A sha256 mismatch refuses to install: nothing is written and
+the reason names the asset -- a corrupted or swapped download is
+never dropped into the bin directory."
+  (let* ((payload "fake lark-cli that will not land\n")
+         (tar (lark-org-tests--make-tar
+               (list (list "lark-cli" 493 payload))))
+         (release (json-encode
+                   (list
+                    (cons "tag_name" "v1.0.100")
+                    (cons "assets"
+                          (list
+                           (list
+                            (cons "name"
+                                  "lark-cli-1.0.100-linux-arm64.tar.gz")
+                            (cons "browser_download_url"
+                                  "https://fixtures.invalid/lark-cli.tar.gz"))
+                           (list
+                            (cons "name" "checksums.txt")
+                            (cons "browser_download_url"
+                                  "https://fixtures.invalid/checksums.txt")))))))
+         (srcdir (make-temp-file "lark-org-cli-src" t))
+         (tarball (expand-file-name "fixture.tar" srcdir))
+         (sums (expand-file-name "checksums.txt" srcdir))
+         (bindir (make-temp-file "lark-org-cli-bin" t)))
+    (unwind-protect
+        (progn
+          (with-temp-file tarball (insert tar))
+          (with-temp-file sums
+            (insert (make-string 64 ?0)
+                    "  lark-cli-1.0.100-linux-arm64.tar.gz\n"))
+          (cl-letf ((lark-org-http-function
+                     (lambda (_m _u _h _b) release))
+                    (lark-org-cli-download-function
+                     (lambda (url dest)
+                       (copy-file (if (string-suffix-p "checksums.txt" url)
+                                      sums tarball)
+                                  dest t)))
+                    (lark-org-cli-install-dir bindir)
+                    (lark-org-cli-program "lark-org-cli-test")
+                    (system-configuration
+                     "aarch64-unknown-linux-android"))
+            (let ((err (should-error (lark-org-cli-install))))
+              (should (string-match-p "sha256 mismatch" (cadr err))))
+            (should-not (file-exists-p
+                         (expand-file-name "lark-org-cli-test" bindir)))))
+      (delete-directory srcdir t)
+      (delete-directory bindir t))))
+
+(ert-deftest lark-org-tests-cli-install-pinned-no-api ()
+  "A pinned version builds the download URLs directly: the
+transport seam must not be called at all."
+  (let* ((payload "pinned fake lark-cli\n")
+         (tar (lark-org-tests--make-tar
+               (list (list "lark-cli" 493 payload))))
+         (sha (secure-hash 'sha256 tar))
+         (srcdir (make-temp-file "lark-org-cli-src" t))
+         (tarball (expand-file-name "fixture.tar" srcdir))
+         (sums (expand-file-name "checksums.txt" srcdir))
+         (bindir (make-temp-file "lark-org-cli-bin" t)))
+    (unwind-protect
+        (progn
+          (with-temp-file tarball (insert tar))
+          (with-temp-file sums
+            (insert sha "  lark-cli-9.9.99-linux-arm64.tar.gz\n"))
+          (cl-letf ((lark-org-http-function
+                     (lambda (&rest _args)
+                       (error "API must not be called for a pinned version")))
+                    (lark-org-cli-download-function
+                     (lambda (url dest)
+                       (should (string-match-p "/v9\\.9\\.99/" url))
+                       (copy-file (if (string-suffix-p "checksums.txt" url)
+                                      sums tarball)
+                                  dest t)))
+                    (lark-org-cli-install-dir bindir)
+                    (lark-org-cli-program "lark-org-cli-test")
+                    (system-configuration
+                     "aarch64-unknown-linux-android"))
+            (lark-org-cli-install "9.9.99")
+            (let ((dest (expand-file-name "lark-org-cli-test" bindir)))
+              (should (file-executable-p dest))
+              (should (equal (with-temp-buffer
+                               (insert-file-contents-literally dest)
+                               (buffer-string))
+                             payload)))))
+      (delete-directory srcdir t)
+      (delete-directory bindir t))))
+
+(ert-deftest lark-org-tests-cli-install-gunzip ()
+  "The real release asset is gzipped; the in-memory gunzip path
+(zlib) reads it back byte-exact with the mode preserved.  Needs
+gzip to build the fixture and zlib to read it."
+  (skip-unless (and (executable-find "gzip")
+                    (fboundp 'zlib-decompress-region)))
+  (let* ((payload "gzipped fake lark-cli\n")
+         (tar (lark-org-tests--make-tar
+               (list (list "lark-cli" 493 payload))))
+         (dir (make-temp-file "lark-org-cli-gz" t))
+         (plain (expand-file-name "lark-cli.tar" dir))
+         (gz (expand-file-name "lark-cli.tar.gz" dir))
+         (dest (expand-file-name "lark-cli" dir)))
+    (unwind-protect
+        (progn
+          ;; Plain write first (no .gz suffix, so
+          ;; auto-compression-mode leaves the fixture alone), then
+          ;; REAL gzip creates the compressed image.
+          (with-temp-file plain (insert tar))
+          (should (zerop (call-process "gzip" nil nil nil plain)))
+          (should (file-exists-p gz))
+          (lark-org-cli--extract-member gz "lark-cli" dest)
+          (should (file-executable-p dest))
+          (should (equal (with-temp-buffer
+                           (insert-file-contents-literally dest)
+                           (buffer-string))
+                         payload)))
+      (delete-directory dir t))))
+
+(ert-deftest lark-org-tests-cli-install-tar-fallback ()
+  "The no-zlib fallback extracts the same member through the tar
+program (Termux, emacshell and desktops all carry it)."
+  (skip-unless (executable-find "tar"))
+  (let* ((payload "fallback fake lark-cli\n")
+         (tar (lark-org-tests--make-tar
+               (list (list "lark-cli" 493 payload))))
+         (dir (make-temp-file "lark-org-cli-fb" t))
+         (archive (expand-file-name "lark-cli.tar" dir))
+         (dest (expand-file-name "lark-cli" dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file archive (insert tar))
+          (lark-org-cli--extract-tar archive "lark-cli" dest)
+          (should (file-executable-p dest))
+          (should (equal (with-temp-buffer
+                           (insert-file-contents-literally dest)
+                           (buffer-string))
+                         payload)))
+      (delete-directory dir t))))
+
 ;;;; Honest reads (v0.3 law: signal the reason, never fake chats)
 
 (ert-deftest lark-org-tests-api-failure-signals ()
