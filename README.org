@@ -95,8 +95,8 @@ ORG-CHAT-STANDARD.org).
 
 * Android / touch
 
-The package is Android-compatible by law (Owner 2026-11-06 #hq:
-"Comms pkgs must be Android-compatible"): it is pure elisp over
+The package is Android-compatible by law (Owner order 2026-11-06:
+comms packages must be Android-compatible): it is pure elisp over
 url.el — no subprocess, no graphic-only API, nothing desktop
 assumed — and it runs on the official Emacs Android app
 (org.gnu.emacs), Termux Emacs, and touch tablets.  The CLI route is
