@@ -8,8 +8,9 @@
 
 ## 1. Closing-session work log (2026-11-26)
 
-1. **emacshell v0.1.5 — "ready on install"** (Owner order: *"I don't wanna run fix repo.
-   I want to have it ready on install"*) — landed on `ai/main` as `9f0b9ad`:
+1. **emacshell v0.1.5 — "ready on install"** (Owner order 2026-11-26: the apt
+   repository must be configured at install time, no manual fix step) — landed
+   on `ai/main` as `9f0b9ad`:
    - `TermuxInstaller.fixAptSourcesList` now writes the `emacshell-packages` repository line
      into `$PREFIX/etc/apt/sources.list` **unconditionally** at bootstrap-install time
      (a missing or empty sources.list is created; retired upstream/apt-* lines are commented
